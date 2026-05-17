@@ -82,6 +82,14 @@ sensor_forward:
     - 0.0
     - 1.0
     vignetting_cos4: false
+    # Spatial (radial) transmission map: models optical vignetting in the analytic
+    # forward model.  Has no effect when using a PBRT realistic lens (which handles
+    # vignetting physically).  Set enabled: true and tune edge_factor per camera.
+    optics_transmittance_spatial:
+      enabled: false
+      mode: radial_power
+      edge_factor: 0.85    # relative transmission at image corner (1.0 = no vignetting)
+      exponent: 2.0        # controls roll-off shape; 2.0 ≈ cos^4 illumination falloff
     pbrt_spectral_exr:
       radiance_to_irradiance: thin_lens
       radiance_to_irradiance_scale: null

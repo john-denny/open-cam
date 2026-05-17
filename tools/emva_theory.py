@@ -15,9 +15,16 @@ def temporal_variance_electrons_squared(
     *,
     use_poisson: bool,
     sigma_ktc_e: float = 0.0,
+    mu_dark_e: float = 0.0,
 ) -> float:
-    """Variance of electron count after shot + read + optional kTC (before full-well clip)."""
-    v_shot = float(mu_e) if use_poisson else 0.0
+    """Variance of electron count after shot + read + optional kTC (before full-well clip).
+
+    ``mu_dark_e`` is the mean dark-current electrons per pixel.  Dark charge arrives
+    via independent Poisson statistics, so its shot variance adds to the signal shot
+    variance.  At typical short exposures (< 0.1 s) the effect is negligible, but it
+    becomes significant at elevated temperature or long integration time.
+    """
+    v_shot = float(mu_e + mu_dark_e) if use_poisson else 0.0
     return v_shot + float(sigma_d_e) ** 2 + float(sigma_ktc_e) ** 2
 
 
@@ -28,11 +35,13 @@ def temporal_variance_dn_squared(
     *,
     use_poisson: bool,
     sigma_ktc_e: float = 0.0,
+    mu_dark_e: float = 0.0,
 ) -> float:
     """Var(DN) for temporal noise only (no PRNU/DSNU), linear regime, no saturation."""
     return (
         temporal_variance_electrons_squared(
-            mu_e, sigma_d_e, use_poisson=use_poisson, sigma_ktc_e=sigma_ktc_e
+            mu_e, sigma_d_e, use_poisson=use_poisson, sigma_ktc_e=sigma_ktc_e,
+            mu_dark_e=mu_dark_e,
         )
         / float(K_e_per_DN) ** 2
     )
@@ -71,13 +80,14 @@ def monte_carlo_temporal_dn_stats(
     n_trials: int,
     seed: int,
     sigma_ktc_e: float = 0.0,
+    mu_dark_e: float = 0.0,
 ) -> tuple[float, float]:
     """Return (mean DN, sample variance of DN) from independent temporal draws."""
     rng = np.random.default_rng(seed)
     if use_poisson:
-        e = rng.poisson(mu_e, size=n_trials).astype(np.float64)
+        e = rng.poisson(float(mu_e + mu_dark_e), size=n_trials).astype(np.float64)
     else:
-        e = np.full(n_trials, mu_e, dtype=np.float64)
+        e = np.full(n_trials, float(mu_e + mu_dark_e), dtype=np.float64)
     e = e + rng.normal(0.0, sigma_d_e, size=n_trials)
     if sigma_ktc_e > 0.0:
         e = e + rng.normal(0.0, sigma_ktc_e, size=n_trials)
@@ -99,6 +109,7 @@ def photon_transfer_curve_checks(
     seed: int,
     variance_rtol: float,
     mean_atol: float,
+    mu_dark_e: float = 0.0,
 ) -> list[dict]:
     """Compare theory vs Monte Carlo at several mean signal levels."""
     rows: list[dict] = []
@@ -108,7 +119,9 @@ def photon_transfer_curve_checks(
             pred_mean, pred_var = dark_floor_clip_mean_var_dn(sigma_d_e, K_e_per_DN, black_dn)
         else:
             pred_mean = mean_dn_linear(mu, K_e_per_DN, black_dn)
-            pred_var = temporal_variance_dn_squared(mu, sigma_d_e, K_e_per_DN, use_poisson=use_poisson)
+            pred_var = temporal_variance_dn_squared(
+                mu, sigma_d_e, K_e_per_DN, use_poisson=use_poisson, mu_dark_e=mu_dark_e,
+            )
         m_mc, v_mc = monte_carlo_temporal_dn_stats(
             float(mu),
             sigma_d_e,
@@ -118,6 +131,7 @@ def photon_transfer_curve_checks(
             full_well_e=full_well_e,
             n_trials=n_trials,
             seed=base_seed + 1000 * i + 17,
+            mu_dark_e=mu_dark_e,
         )
         var_ok = abs(v_mc - pred_var) <= variance_rtol * max(pred_var, 1e-12)
         mean_ok = abs(m_mc - pred_mean) <= mean_atol

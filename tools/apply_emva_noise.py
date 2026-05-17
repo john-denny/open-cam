@@ -401,7 +401,7 @@ def bayer_sample_rgb(rgb: np.ndarray, pattern: str) -> np.ndarray:
     return rgb[jj, ii, ch]
 
 
-def apply_cfa_spatial_crosstalk(cfa_e: np.ndarray, cfg: dict) -> np.ndarray:
+def apply_cfa_spatial_crosstalk(cfa_e: np.ndarray, cfg: dict, pattern: str = "RGGB") -> np.ndarray:
     """Apply spatial diffusion crosstalk to a CFA RAW electron image (HxW).
 
     Models photon diffusion in the epitaxial silicon: photons absorbed near a
@@ -415,6 +415,11 @@ def apply_cfa_spatial_crosstalk(cfa_e: np.ndarray, cfg: dict) -> np.ndarray:
     is conserved; the blur merely redistributes signal between neighbouring wells.
     Boundary pixels are handled with reflect-padding to avoid edge artefacts.
 
+    Longer wavelengths (red) penetrate deeper into silicon and undergo more lateral
+    diffusion before collection, so per-channel sigmas can be set with
+    ``sigma_pixels_r``, ``sigma_pixels_g``, ``sigma_pixels_b``.  When all three
+    equal ``sigma_pixels`` a single fast full-mosaic Gaussian is used.
+
     Typical σ values
     ----------------
     σ ≈ 0.20 px  →  ~0.3 % leakage to each nearest-neighbour  (very low-crosstalk BSI)
@@ -427,6 +432,8 @@ def apply_cfa_spatial_crosstalk(cfa_e: np.ndarray, cfg: dict) -> np.ndarray:
         HxW float32 array of pre-noise electron counts from ``bayer_sample_rgb``.
     cfg:
         ``cfa.spatial_crosstalk`` sub-dict from the camera model YAML.
+    pattern:
+        Bayer pattern string (e.g. ``"RGGB"``), used for per-channel sigma routing.
     """
     if not bool(cfg.get("enabled", False)):
         return cfa_e
@@ -435,7 +442,37 @@ def apply_cfa_spatial_crosstalk(cfa_e: np.ndarray, cfg: dict) -> np.ndarray:
         return cfa_e
     from scipy.ndimage import gaussian_filter  # noqa: PLC0415
 
-    out = gaussian_filter(cfa_e.astype(np.float64), sigma=sigma, mode="reflect")
+    sigma_r = float(cfg.get("sigma_pixels_r", sigma))
+    sigma_g = float(cfg.get("sigma_pixels_g", sigma))
+    sigma_b = float(cfg.get("sigma_pixels_b", sigma))
+
+    if sigma_r == sigma_g == sigma_b:
+        # All channels identical: single fast full-mosaic blur.
+        out = gaussian_filter(cfa_e.astype(np.float64), sigma=sigma, mode="reflect")
+        return np.clip(out, 0.0, None).astype(np.float32)
+
+    # Per-channel wavelength-dependent diffusion.
+    # Each Bayer phase is blurred independently with its channel-specific sigma,
+    # then interleaved back.  sigma is expressed in full-resolution pixels; on the
+    # subsampled (2×-decimated) grid the equivalent sigma is sigma_ch / 2.
+    pat_upper = pattern.upper()
+    if pat_upper not in _BAYER_PHASE:
+        # Unknown pattern: fall back to uniform blur.
+        out = gaussian_filter(cfa_e.astype(np.float64), sigma=sigma, mode="reflect")
+        return np.clip(out, 0.0, None).astype(np.float32)
+
+    phase_lut = _BAYER_PHASE[pat_upper]  # (ch00, ch01, ch10, ch11)  R=0, G=1, B=2
+    sigma_ch = (sigma_r, sigma_g, sigma_b)
+    out = cfa_e.astype(np.float64).copy()
+    for _pi in range(4):
+        _row_off, _col_off = _pi >> 1, _pi & 1
+        _sig = sigma_ch[phase_lut[_pi]]
+        if _sig <= 0.0:
+            continue
+        sub = cfa_e[_row_off::2, _col_off::2].astype(np.float64)
+        # Divide by 2 because the subsampled grid has pixels spaced 2 full-res pixels apart.
+        sub_blurred = gaussian_filter(sub, sigma=_sig / 2.0, mode="reflect")
+        out[_row_off::2, _col_off::2] = sub_blurred
     return np.clip(out, 0.0, None).astype(np.float32)
 
 
@@ -548,7 +585,14 @@ def apply_hot_stuck_pixel_model(
         stuck_high_mask = (~hot_mask) & (rng.random((h, w)) < stuck_high_rate)
         stuck_low_mask = (~hot_mask) & (~stuck_high_mask) & (rng.random((h, w)) < stuck_low_rate)
         if np.any(hot_mask):
-            hot_add = rng.uniform(hot_min_e, hot_max_e, size=(h, w)).astype(np.float32)
+            # Hot-pixel dark current follows an exponential distribution: most hot
+            # pixels are only slightly elevated, with a long tail toward very high
+            # dark current.  E[hot_add] = scale; Std[hot_add] = scale.
+            # We use scale = (hot_max_e - hot_min_e) / 3 so ~95% of hot pixels fall
+            # within [hot_min_e, hot_max_e] and clip the remainder at the limits.
+            _hot_scale = max(1.0, (hot_max_e - hot_min_e) / 3.0)
+            hot_add = rng.exponential(scale=_hot_scale, size=(h, w)).astype(np.float32)
+            hot_add = np.clip(hot_add + hot_min_e, hot_min_e, hot_max_e)
         if persistent_map_npz is not None:
             persistent_map_npz.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(
@@ -892,7 +936,11 @@ def main() -> None:
     K_e_per_DN = float(emva.get("overall_system_gain_K_e_per_DN", 0.08))
     sigma_d_e = float(emva.get("sigma_d_e", 2.0))
     dsnu_std_e = float(emva.get("dsnu_std_e", 0.3))
+    dsnu_mean_e = float(emva.get("dsnu_mean_e", dsnu_std_e))
     prnu_std = float(emva.get("prnu_std_fraction", 0.005))
+    prnu_std_r = float(emva.get("prnu_std_fraction_r", prnu_std))
+    prnu_std_g = float(emva.get("prnu_std_fraction_g", prnu_std))
+    prnu_std_b = float(emva.get("prnu_std_fraction_b", prnu_std))
     black_dn = float(emva.get("black_level_DN", 64.0))
     bit_depth = int(adc.get("bit_depth", 12))
     if bit_depth < 1:
@@ -1096,7 +1144,7 @@ def main() -> None:
         # Spatial inter-pixel diffusion crosstalk: must be applied after CFA sampling
         # so that the blur acts on the RAW mosaic (R leaking to G/B wells, etc.).
         # Applied before the noise chain so shot noise is drawn on the correct mean.
-        signal_e = apply_cfa_spatial_crosstalk(signal_e, spatial_xtalk_cfg)
+        signal_e = apply_cfa_spatial_crosstalk(signal_e, spatial_xtalk_cfg, bayer_pat)
 
     # ---- Fixed spatial patterns (same for every frame from the same camera) ----
     # PRNU: per-pixel multiplicative gain non-uniformity baked into the silicon.
@@ -1104,12 +1152,50 @@ def main() -> None:
     # Both are sampled with spatial_rng, which is seeded from emva.spatial_noise_seed
     # or (by default) a hash of the config path.  This guarantees that different cameras
     # have different patterns while the same camera repeats the same pattern every run.
-    prnu_map = 1.0 + spatial_rng.normal(0.0, prnu_std, size=signal_e.shape).astype(np.float32)
-    if signal_e.ndim == 2:
-        dsnu_map = spatial_rng.normal(0.0, dsnu_std_e, size=signal_e.shape).astype(np.float32)
+    #
+    # In CFA mode each Bayer color has its own independent PRNU realisation drawn with
+    # an optionally channel-specific sigma (emva.prnu_std_fraction_r/g/b).
+    # The map is clipped to [0, ∞) so negative photosensitivity is always excluded.
+    if signal_e.ndim == 2 and bayer_on:
+        _prnu_phase_std = (prnu_std_r, prnu_std_g, prnu_std_b)  # R=0, G=1, B=2
+        _cfa_phase_ch = _BAYER_PHASE[bayer_pat.upper()]
+        prnu_map = np.empty(signal_e.shape, dtype=np.float32)
+        for _pi in range(4):
+            _row_off, _col_off = _pi >> 1, _pi & 1
+            _ch_std = _prnu_phase_std[_cfa_phase_ch[_pi]]
+            _sub = 1.0 + spatial_rng.normal(0.0, _ch_std, size=signal_e[_row_off::2, _col_off::2].shape)
+            prnu_map[_row_off::2, _col_off::2] = _sub
+        prnu_map = np.maximum(prnu_map, 0.0, out=prnu_map)
     else:
-        dsnu_map = spatial_rng.normal(0.0, dsnu_std_e, size=signal_e.shape[:2]).astype(np.float32)
-        dsnu_map = dsnu_map[:, :, None]
+        prnu_map = np.maximum(
+            (1.0 + spatial_rng.normal(0.0, prnu_std, size=signal_e.shape)).astype(np.float32),
+            0.0,
+        )
+
+    # DSNU: per-pixel absolute dark-current variation follows a log-normal distribution.
+    # Dark current arises from trap-mediated generation: most pixels are near the mean,
+    # a long positive tail represents sites with elevated leakage.  The Gaussian model
+    # allowed unphysical negative per-pixel dark currents; log-normal keeps D_i ≥ 0.
+    # Parameters: dsnu_mean_e (mean per-pixel dark current, default = dsnu_std_e) and
+    # dsnu_std_e (standard deviation).  The stored dsnu_map is the zero-mean offset
+    # D_i - dsnu_mean_e so that dark_mean_e (temperature-scaled nominal) remains the
+    # global mean dark signal.
+    if dsnu_mean_e > 1e-9 and dsnu_std_e > 0.0:
+        _v_ratio = dsnu_std_e / dsnu_mean_e
+        _sigma_ln = float(np.sqrt(np.log1p(_v_ratio ** 2)))
+        _mu_ln = np.log(dsnu_mean_e) - 0.5 * _sigma_ln ** 2
+        if signal_e.ndim == 2:
+            _dsnu_abs = spatial_rng.lognormal(_mu_ln, _sigma_ln, size=signal_e.shape).astype(np.float32)
+            dsnu_map = (_dsnu_abs - dsnu_mean_e).astype(np.float32)
+        else:
+            _dsnu_abs = spatial_rng.lognormal(_mu_ln, _sigma_ln, size=signal_e.shape[:2]).astype(np.float32)
+            dsnu_map = (_dsnu_abs - dsnu_mean_e)[:, :, None].astype(np.float32)
+    else:
+        if signal_e.ndim == 2:
+            dsnu_map = spatial_rng.normal(0.0, dsnu_std_e, size=signal_e.shape).astype(np.float32)
+        else:
+            dsnu_map = spatial_rng.normal(0.0, dsnu_std_e, size=signal_e.shape[:2]).astype(np.float32)
+            dsnu_map = dsnu_map[:, :, None]
 
     # ---- Temporal frame noise (varies legitimately per frame) ----
     # Dark current: mean electrons from temperature-scaled dark current rate.

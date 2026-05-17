@@ -109,7 +109,9 @@ def psf_sigma_chromatic(
     sigma_geometric_px:
         Constant geometric-aberration blur radius (defocus, coma …) in pixels.
     """
-    sigma_diff = 0.42 * f_number * wavelength_nm / (1000.0 * pixel_pitch_um)
+    # Coefficient 0.437 = 1.028 / 2.355 comes from matching the FWHM of the Airy
+    # pattern (1.028 λN) to a Gaussian FWHM (2.355 σ).
+    sigma_diff = 0.437 * f_number * wavelength_nm / (1000.0 * pixel_pitch_um)
     return float(np.sqrt(sigma_diff**2 + sigma_geometric_px**2))
 
 
