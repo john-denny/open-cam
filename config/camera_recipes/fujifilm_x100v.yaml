@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: fujifilm_x100v
   display_name: Fujifilm X100V
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f28
 sensor_model: fujifilm_x100v
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: fujifilm_gfx_50r
   display_name: Fujifilm GFX 50R
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f20
 sensor_model: fujifilm_gfx_50r
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

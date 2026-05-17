@@ -1,0 +1,15 @@
+schema_version: 1
+# Full-frame / large-sensor normal lens: Double-Gauss f/2.0, 50 mm.
+# Suitable for: full-frame, medium-format, and older large-pixel cameras (>= 4.5 µm pitch).
+# Source: config/lenses/dgauss.50mm.dat — US patent 2,673,491 (Tronnier, expired),
+#   as distributed in pbrt-v4-scenes (MIT licence).
+# Aperture diameter = 50 mm / 2.0 = 25.0 mm.
+lens:
+  camera: realistic
+  realistic_lensfile: config/lenses/dgauss.50mm.dat
+  realistic_aperture_diameter_mm: 25.0
+  realistic_focus_distance: 1.0
+  post_psf:
+    enabled: false
+    mode: chromatic_gaussian
+    sigma_geometric_pixels: 0.50

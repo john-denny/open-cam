@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: panasonic_gx8
   display_name: Panasonic GX8
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f28
 sensor_model: panasonic_gx8
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

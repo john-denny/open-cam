@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: nikon_z_7_2
   display_name: Nikon Z_7_2
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f20
 sensor_model: nikon_z_7_2
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

@@ -36,15 +36,25 @@ noise:
     dark_current_e_per_s: 0.15
     dark_current_reference_temp_c: 20.0
     temperature_c: 20.0
-    dark_current_doubling_per_c: 6.0
-    row_fpn_std_e: 0.0
-    column_fpn_std_e: 0.0
+    # Arrhenius model (preferred): I(T)/I(T0) = exp( (Ea/kB)*(1/T0-1/T) )
+    # Ea=0.63 eV is the trap-generation activation energy for silicon.
+    # Set to 0.0 to fall back to the legacy doubling-rule approximation.
+    dark_activation_energy_eV: 0.63
+    dark_current_doubling_per_c: 6.0   # used only when dark_activation_energy_eV: 0.0
+    row_fpn_std_e: 0.5
+    column_fpn_std_e: 0.3
+    # kTC reset noise: only relevant for sensors without correlated double sampling (CDS).
+    # Modern rolling-shutter BSI CMOS uses CDS, so this is disabled by default.
+    ktc_noise:
+      enabled: false
+      # node_capacitance_fF: null   # optional; estimated from K_e_per_DN if absent
+      # vref_V: 1.8                 # ADC reference voltage used for capacitance estimate
   adc:
     bit_depth: 10
     full_well_e: 4800
     clipping: hard
-    inl_quadratic_fraction: 0.0
-    dnl_std_lsb: 0.0
+    inl_quadratic_fraction: 0.015
+    dnl_std_lsb: 0.3
   processing:
     auto_exposure: false
     exposure_scale_e_per_unit: 1.0

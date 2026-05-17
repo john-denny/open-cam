@@ -1,0 +1,146 @@
+Lens Models
+===========
+
+Background
+----------
+Prior to this work every camera recipe — regardless of sensor class — used the
+same lens prescription: config/lenses/wide_22mm.dat at a fixed 4 mm aperture
+diameter (f/5.5 at 22 mm focal length).  A Canon EOS 20D (6.4 µm pitch, APS-C)
+and an iPhone 8 (1.4 µm pitch, phone) were rendered through an identical optics
+model, which is not physically meaningful.
+
+This change introduces class-appropriate lens models for all 60 production camera
+recipes and adds three new lens prescriptions to the repository.
+
+
+New lens prescription files
+----------------------------
+config/lenses/ now contains four .dat files.  All use PBRT's ReadFloatFile lens
+format: four whitespace-separated columns per surface (radius, thickness, n,
+aperture semi-diameter) in millimetres.  A row with n=0 marks the aperture stop.
+
+  wide_22mm.dat
+      Wide-angle (38° HFOV) Nakamura design, 22 mm focal length.
+      Source: MLD p. 360, scaled from 100 mm.  Pre-existing file.
+
+  dgauss.50mm.dat
+      Double-Gauss f/2, 50 mm focal length (US patent 2,673,491, Tronnier).
+      Source: Modern Lens Design p. 312, scaled from 100 mm.
+      Retrieved from pbrt-v4-scenes (MIT licence), mmp/pbrt-v4-scenes.
+
+  telephoto.250mm.dat
+      Sigler super-achromate telephoto, 250 mm EFL, f/5.6.
+      Source: MLD p. 175, scaled from 100 mm.
+      Retrieved from pbrt-v4-scenes (MIT licence), mmp/pbrt-v4-scenes.
+
+  fisheye.10mm.dat
+      Muller 16 mm/f4 fisheye, 155.9° FOV, scaled to 10 mm.
+      Source: MLD p. 164.
+      Retrieved from pbrt-v4-scenes (MIT licence), mmp/pbrt-v4-scenes.
+
+telephoto.250mm.dat and fisheye.10mm.dat are available for manual use in
+research_ configs but are not assigned to any production recipe automatically
+(see assignment rules below).
+
+
+New lens model config files
+----------------------------
+Four lens model YAMLs were added to config/lens_models/.  Each is a minimal
+override on top of config/lens_models/default.yaml and sets only the three
+required realistic-camera fields (lensfile, aperture_diameter_mm, focus_distance)
+plus a class-appropriate post_psf sigma_geometric_pixels baseline.
+
+  phone_wide_f18.yaml
+      Prescription : wide_22mm.dat
+      Aperture     : 12.2 mm  (22 mm / f1.8)
+      Intended for : smartphone sensors (< 1.5 µm pixel pitch)
+
+  compact_wide_f28.yaml
+      Prescription : wide_22mm.dat
+      Aperture     :  7.9 mm  (22 mm / f2.8)
+      Intended for : compact/bridge sensors (1.5–3.0 µm pixel pitch)
+
+  normal_dgauss_50mm_f28.yaml
+      Prescription : dgauss.50mm.dat
+      Aperture     : 17.9 mm  (50 mm / f2.8)
+      Intended for : APS-C and Micro Four Thirds sensors (3.0–4.0 µm pixel pitch)
+
+  normal_dgauss_50mm_f20.yaml
+      Prescription : dgauss.50mm.dat
+      Aperture     : 25.0 mm  (50 mm / f2.0)
+      Intended for : full-frame, large-pitch, and legacy sensors (>= 4.0 µm pitch)
+
+The focus_distance in all four models is 1.0 m (scene units).  Override it per
+run via pipeline.yaml → realistic_focus_distance_override, or per-recipe via a
+lens model override in the camera recipe YAML.
+
+
+Assignment tool
+---------------
+tools/assign_lens_models.py automates lens model assignment for every camera
+recipe.  Run it whenever new recipes are added or pixel-pitch data is updated.
+
+  # preview changes without writing
+  python tools/assign_lens_models.py --dry-run
+
+  # apply
+  python tools/assign_lens_models.py
+
+Assignment logic (highest priority first):
+
+  1. source.sensor_class in the sensor model YAML:
+       phone      → phone_wide_f18
+       compact    → compact_wide_f28
+       mft        → normal_dgauss_50mm_f28
+       apsc       → normal_dgauss_50mm_f28
+       fullframe  → normal_dgauss_50mm_f20
+       old        → normal_dgauss_50mm_f20
+
+  2. sensor.pixel_pitch_um from the merged sensor model:
+       < 1.5 µm   → phone_wide_f18
+       1.5–3.0 µm → compact_wide_f28
+       3.0–4.0 µm → normal_dgauss_50mm_f28
+       >= 4.0 µm  → normal_dgauss_50mm_f20
+
+Recipes whose stem begins with research_, study_, or default are skipped; they
+use deliberately chosen lens types for controlled experiments.  Pass --skip NAME
+to exclude additional stems.
+
+
+Outcome
+-------
+60 production camera recipes were updated.  13 research/study/default configs
+were left unchanged.  Example assignments:
+
+  iPhone 8          → phone_wide_f18         (f/1.8 wide, 12.2 mm aperture)
+  Canon EOS 80D     → normal_dgauss_50mm_f28 (f/2.8 Double-Gauss, 17.9 mm)
+  Nikon Z6          → normal_dgauss_50mm_f20 (f/2.0 Double-Gauss, 25.0 mm)
+  Sony RX100M3      → compact_wide_f28       (f/2.8 wide, 7.9 mm aperture)
+
+These remain approximations.  A Double-Gauss 50 mm is not the same as a
+specific camera's kit lens; the prescriptions are public-domain classical designs
+used as physically plausible stand-ins.  For highest accuracy, replace the lens
+file for a given recipe with a patent-derived prescription that matches the actual
+focal length and f/# of the lens being simulated.
+
+
+Caveats and future work
+-----------------------
+- All four prescriptions use spherical surfaces only (no aspheres).  Modern
+  phone lenses are 5–7 element plastic aspheric designs with significantly
+  different aberration signatures.  For phone models, enabling the post_psf
+  chromatic_gaussian mode (lens.post_psf.enabled: true) may give more realistic
+  MTF behaviour than the refractive trace alone.
+
+- Focus distance is fixed at 1.0 m in all new models, while the pipeline default
+  chart distance is 4.0 m (realistic_focus_distance_override).  PBRT will focus
+  the lens at 1.0 m and render the chart at 4.0 m, producing a mildly defocused
+  result.  Adjust realistic_focus_distance_override in pipeline.yaml or in the
+  per-recipe lens model to match your scene distance.
+
+- telephoto.250mm.dat and fisheye.10mm.dat are available for use in custom
+  research configurations but are not yet wired into any assignment class.
+
+- The Canon EOS 20D sensor model is still referenced as the default lens model by
+  the legacy canon_eos_20d camera recipe; it has been reassigned to
+  normal_dgauss_50mm_f20 since the 20D uses a 6.4 µm pixel (full-frame-class pitch).

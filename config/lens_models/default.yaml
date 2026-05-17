@@ -1,15 +1,37 @@
 schema_version: 1
+# Base lens model — all lens model YAMLs are deep-merged on top of this file.
+# Only override the keys that differ from these defaults.
 lens:
-  camera: realistic
-  realistic_lensfile: config/lenses/wide_22mm.dat
-  realistic_aperture_diameter_mm: 4.0
-  realistic_focus_distance: 1.0
+  # Camera type: pinhole | thinlens | realistic
+  camera: pinhole
+
+  # --- Pinhole parameters ---
+  pinhole_fov_deg: 45.0
+
+  # --- Thin-lens parameters ---
+  thinlens_fov_deg: 45.0
+  thinlens_lens_radius: 0.0
+  thinlens_focal_distance: 1.0
+
+  # --- Realistic lens parameters ---
+  realistic_lensfile: null
+  realistic_aperture_diameter_mm: null
+  realistic_focus_distance: null
+
+  # --- Post-render PSF (applied to spectral EXR before electron integration) ---
+  # Two modes:
+  #   gaussian          – single sigma_pixels applied to every channel (legacy).
+  #   chromatic_gaussian – σ(λ) = sqrt( (0.42·N·λ/(1000·pitch))² + σ_geom² )
+  #                        f_number and pixel_pitch_um are read from sensor model.
   post_psf:
     enabled: false
-    mode: gaussian
-    sigma_pixels: 0.75
+    mode: chromatic_gaussian
+    sigma_geometric_pixels: 0.50   # geometric-aberration baseline [px]
+    sigma_pixels: 0.0              # used by 'gaussian' mode only
+    # f_number: null               # override sensor.f_number  (null = use sensor value)
+    # pixel_pitch_um: null         # override sensor.pixel_pitch_um (null = use sensor value)
     stray_light:
       enabled: false
       veiling_glare_fraction: 0.01
-      halo_sigma_pixels: 8.0
-      halo_strength: 0.04
+      halo_sigma_pixels: 15.0
+      halo_strength: 0.01

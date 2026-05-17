@@ -1,0 +1,13 @@
+schema_version: 1
+# Compact-class wide-angle lens: f/2.8, 22 mm focal length (Nakamura wide-angle design).
+# Suitable for: compact/bridge cameras (~2.4 µm pixel pitch).
+# Aperture diameter = 22 mm / 2.8 ≈ 7.9 mm.
+lens:
+  camera: realistic
+  realistic_lensfile: config/lenses/wide_22mm.dat
+  realistic_aperture_diameter_mm: 7.9
+  realistic_focus_distance: 1.0
+  post_psf:
+    enabled: false
+    mode: chromatic_gaussian
+    sigma_geometric_pixels: 0.50

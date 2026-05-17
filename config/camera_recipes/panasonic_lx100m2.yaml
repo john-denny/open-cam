@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: panasonic_lx100m2
   display_name: Panasonic LX100M2
-lens_model: canon_eos_20d
+lens_model: compact_wide_f28
 sensor_model: panasonic_lx100m2
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: samsung_nx30
   display_name: Samsung NX30
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f20
 sensor_model: samsung_nx30
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

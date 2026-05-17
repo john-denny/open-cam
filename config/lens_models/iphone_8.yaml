@@ -1,15 +1,16 @@
 schema_version: 1
+# Delta from config/lens_models/default.yaml — only overrides are listed.
 lens:
   camera: realistic
   realistic_lensfile: config/lenses/wide_22mm.dat
   realistic_aperture_diameter_mm: 4.0
   realistic_focus_distance: 1.0
+
   post_psf:
-    enabled: false
-    mode: gaussian
-    sigma_pixels: 0.75
+    enabled: true
+    # mode: chromatic_gaussian (inherited)
+    # sigma_geometric_pixels: 0.50 (inherited)
     stray_light:
-      enabled: false
       veiling_glare_fraction: 0.015
       halo_sigma_pixels: 10.0
       halo_strength: 0.06

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -18,6 +19,7 @@ from exr_multispectral import (
     spectral_buckets_from_exr,
     trapezoid_weights_nm,
 )
+from sensor_radiometry import photon_flux_density_from_irradiance
 
 
 def read_csv_curve(path: Path, *, strict_wavelength_axis: bool = False) -> tuple[np.ndarray, np.ndarray]:
@@ -94,7 +96,7 @@ def mean_effective_qe(curve_csv: Path, ircf_csv: Path | None) -> float:
     wl, q = read_csv_curve(curve_csv)
     if ircf_csv is not None:
         ir_wl, ir = read_csv_curve(ircf_csv)
-        ir_i = np.interp(wl, ir_wl, ir, left=0.0, right=0.0)
+        ir_i = np.clip(np.interp(wl, ir_wl, ir, left=0.0, right=0.0), 0.0, 1.0)
         q = q * ir_i
     q = np.clip(q, 0.0, 1.0)
     return float(np.mean(q))
@@ -399,6 +401,44 @@ def bayer_sample_rgb(rgb: np.ndarray, pattern: str) -> np.ndarray:
     return rgb[jj, ii, ch]
 
 
+def apply_cfa_spatial_crosstalk(cfa_e: np.ndarray, cfg: dict) -> np.ndarray:
+    """Apply spatial diffusion crosstalk to a CFA RAW electron image (HxW).
+
+    Models photon diffusion in the epitaxial silicon: photons absorbed near a
+    pixel boundary can drift to an adjacent photosite.  Because this acts on the
+    CFA mosaic **before** noise is drawn, it correctly creates inter-colour leakage
+    (R signal contaminating a G well, etc.) that is physically distinct from the
+    global uniform ``sensor.crosstalk`` 3×3 matrix.
+
+    Implementation: convolve the CFA image with a 2-D Gaussian of width
+    ``sigma_pixels``.  The kernel is normalised (sum = 1) so total electron count
+    is conserved; the blur merely redistributes signal between neighbouring wells.
+    Boundary pixels are handled with reflect-padding to avoid edge artefacts.
+
+    Typical σ values
+    ----------------
+    σ ≈ 0.20 px  →  ~0.3 % leakage to each nearest-neighbour  (very low-crosstalk BSI)
+    σ ≈ 0.30 px  →  ~1.5 % leakage to each nearest-neighbour  (typical BSI CMOS, e.g. Sony)
+    σ ≈ 0.50 px  →  ~8 % leakage per nearest-neighbour        (older FSI / large pitch)
+
+    Parameters
+    ----------
+    cfa_e:
+        HxW float32 array of pre-noise electron counts from ``bayer_sample_rgb``.
+    cfg:
+        ``cfa.spatial_crosstalk`` sub-dict from the camera model YAML.
+    """
+    if not bool(cfg.get("enabled", False)):
+        return cfa_e
+    sigma = float(cfg.get("sigma_pixels", 0.3))
+    if sigma <= 0.0:
+        return cfa_e
+    from scipy.ndimage import gaussian_filter  # noqa: PLC0415
+
+    out = gaussian_filter(cfa_e.astype(np.float64), sigma=sigma, mode="reflect")
+    return np.clip(out, 0.0, None).astype(np.float32)
+
+
 def apply_channel_crosstalk(rgb: np.ndarray, m33: np.ndarray) -> np.ndarray:
     """Apply a 3x3 channel mixing matrix to HxWx3 signal.
 
@@ -569,7 +609,7 @@ def qe_curve_on_lambdas(
     wl, q = read_csv_curve(qe_csv)
     if ircf_csv is not None:
         ir_wl, ir = read_csv_curve(ircf_csv)
-        ir_i = np.interp(wl, ir_wl, ir, left=0.0, right=0.0)
+        ir_i = np.clip(np.interp(wl, ir_wl, ir, left=0.0, right=0.0), 0.0, 1.0)
         q = q * ir_i
     q = np.clip(q, 0.0, 1.0)
     return np.interp(lambdas_nm, wl, q, left=0.0, right=0.0).astype(np.float32)
@@ -579,12 +619,95 @@ def integrate_exr_spectral_qe(
     exr_path: Path,
     repo: Path,
     qe_cfg: dict,
+    sensor_cfg: dict,
+    cal_cfg: dict,
     *,
     strict_qe_validation: bool = False,
 ) -> np.ndarray:
-    """HxWx3 proxy signal: Σ_k L(λ_k) QE_c(λ_k) w_k (trapezoid weights in nm)."""
+    """HxWx3 electrons via full photon-counting physics on a PBRT spectral EXR.
+
+    Applies the same radiometric chain as ``pbrt_spectral_exr_to_electrons.py``:
+
+        E_λ  = L_λ · (π / 4N²) · τ_optics · irr_scale · lux_scale   [W / m² / nm]
+        φ(λ) = E_λ · λ / (h c)                                        [ph / m² / s / nm]
+        e_c  = ∫ φ(λ) · QE_c(λ) dλ · (A_pixel · t_int · fill_factor) [electrons]
+
+    Parameters
+    ----------
+    sensor_cfg:
+        The ``sensor`` sub-dict from the camera model (provides ``f_number``,
+        ``pixel_pitch_um``, ``integration_time_s``, ``fill_factor``).
+    cal_cfg:
+        The ``sensor_forward.model.calibration`` sub-dict (provides
+        ``irradiance_scale_W_m2nm_per_unit``, ``optics_transmittance``,
+        ``target_illuminance_lux``, ``illuminant_override_csv``,
+        ``radiometric_autocalibration``).  Pass ``{}`` to use physical defaults.
+    """
+    # Deferred import to avoid a circular-import risk at module load time.
+    from spectral_sensor_forward import illuminance_lux_from_irradiance  # noqa: PLC0415
+
     spec, lam = spectral_buckets_from_exr(exr_path.resolve())
-    w = trapezoid_weights_nm(lam).astype(np.float32)
+    lam = lam.astype(np.float64)
+    w = trapezoid_weights_nm(lam).astype(np.float64)
+
+    # ---- Radiance → sensor-plane irradiance (thin-lens) ----
+    f_number = float(sensor_cfg.get("f_number", 2.8))
+    rad_to_irr = np.pi / (4.0 * max(1e-12, f_number**2))
+
+    # ---- Scalar optics transmittance ----
+    optics_t = float(cal_cfg.get("optics_transmittance", 1.0))
+
+    # ---- Absolute irradiance scale (scene-unit → W/m²/nm) ----
+    irr_scale = float(cal_cfg.get("irradiance_scale_W_m2nm_per_unit", 1.0e-3))
+
+    # ---- Optional photometric calibration (match target_illuminance_lux) ----
+    target_lux = cal_cfg.get("target_illuminance_lux", None)
+    illum_csv = cal_cfg.get("illuminant_override_csv", None)
+    auto_cal_mode = str(cal_cfg.get("radiometric_autocalibration", "off")).lower()
+    lux_scale = 1.0
+
+    if target_lux is not None and illum_csv:
+        # Use illuminant CSV to normalise scene irradiance to target_lux.
+        e_wl, e_v = read_csv_curve((repo / str(illum_csv)).resolve())
+        ill_in = illuminance_lux_from_irradiance(e_wl, e_v * irr_scale)
+        if ill_in > 0:
+            lux_scale = float(target_lux) / ill_in
+        else:
+            print(
+                "warning [integrate_qe]: photopic illuminance of illuminant CSV is <= 0; "
+                "lux_scale left at 1",
+                file=sys.stderr,
+            )
+    elif target_lux is not None and auto_cal_mode not in ("off", "none", "disabled", "false", "0"):
+        # Autocalibrate: measure mean photopic lux of the rendered EXR and rescale.
+        E_mean = (
+            np.mean(spec.astype(np.float64), axis=(0, 1))
+            * (rad_to_irr * optics_t * irr_scale)
+        )
+        scene_lux = illuminance_lux_from_irradiance(lam, E_mean)
+        if scene_lux > 0:
+            lux_scale = float(target_lux) / scene_lux
+        else:
+            print(
+                "warning [integrate_qe]: EXR-derived scene illuminance <= 0; "
+                "skipping autocalibration",
+                file=sys.stderr,
+            )
+
+    global_scale = rad_to_irr * optics_t * irr_scale * lux_scale
+    E = spec.astype(np.float64) * global_scale  # [W / m² / nm] per pixel
+
+    # ---- Energy irradiance → spectral photon flux density ----
+    phi = photon_flux_density_from_irradiance(E, lam)  # [ph / m² / s / nm]
+
+    # ---- Geometry factor: pixel area × integration time × fill factor ----
+    pixel_pitch_um = float(sensor_cfg.get("pixel_pitch_um", 1.4))
+    t_int = float(sensor_cfg.get("integration_time_s", 0.01))
+    fill_factor = float(sensor_cfg.get("fill_factor", 1.0))
+    pixel_area = (pixel_pitch_um * 1e-6) ** 2
+    geom = t_int * fill_factor * pixel_area
+
+    # ---- QE integration ----
     ircf = qe_cfg.get("ircf_csv")
     ircf_path = (repo / ircf).resolve() if ircf else None
     q_r_src, q_g_src, q_b_src = load_qe_curves_rgb(
@@ -592,19 +715,20 @@ def integrate_exr_spectral_qe(
         qe_cfg,
         strict_qe_validation=strict_qe_validation,
     )
-    q_r = np.interp(lam, q_r_src[0], np.clip(q_r_src[1], 0.0, 1.0), left=0.0, right=0.0).astype(np.float32)
-    q_g = np.interp(lam, q_g_src[0], np.clip(q_g_src[1], 0.0, 1.0), left=0.0, right=0.0).astype(np.float32)
-    q_b = np.interp(lam, q_b_src[0], np.clip(q_b_src[1], 0.0, 1.0), left=0.0, right=0.0).astype(np.float32)
+    q_r = np.interp(lam, q_r_src[0], np.clip(q_r_src[1], 0.0, 1.0), left=0.0, right=0.0)
+    q_g = np.interp(lam, q_g_src[0], np.clip(q_g_src[1], 0.0, 1.0), left=0.0, right=0.0)
+    q_b = np.interp(lam, q_b_src[0], np.clip(q_b_src[1], 0.0, 1.0), left=0.0, right=0.0)
     if ircf_path is not None:
         ir_wl, ir = read_csv_curve(ircf_path)
-        ir_i = np.interp(lam, ir_wl, np.clip(ir, 0.0, 1.0), left=0.0, right=0.0).astype(np.float32)
-        q_r *= ir_i
-        q_g *= ir_i
-        q_b *= ir_i
-    acc_r = np.sum(spec * (q_r * w), axis=2)
-    acc_g = np.sum(spec * (q_g * w), axis=2)
-    acc_b = np.sum(spec * (q_b * w), axis=2)
-    return np.stack([acc_r, acc_g, acc_b], axis=2)
+        ir_i = np.interp(lam, ir_wl, np.clip(ir, 0.0, 1.0), left=0.0, right=0.0)
+        q_r = np.clip(q_r * ir_i, 0.0, 1.0)
+        q_g = np.clip(q_g * ir_i, 0.0, 1.0)
+        q_b = np.clip(q_b * ir_i, 0.0, 1.0)
+
+    acc_r = np.sum(phi * (q_r * w), axis=2) * geom
+    acc_g = np.sum(phi * (q_g * w), axis=2) * geom
+    acc_b = np.sum(phi * (q_b * w), axis=2) * geom
+    return np.clip(np.stack([acc_r, acc_g, acc_b], axis=2), 0.0, None).astype(np.float32)
 
 
 def main() -> None:
@@ -694,6 +818,7 @@ def main() -> None:
 
     repo = args.repo_root.resolve()
     cfg_path = None
+    camera_model: dict = {}
     if args.camera_model_config is not None:
         cfg_path = args.camera_model_config.resolve()
         if not cfg_path.is_file():
@@ -774,6 +899,16 @@ def main() -> None:
         raise ValueError(f"adc.bit_depth must be >= 1, got {bit_depth!r}")
     full_well_e = _require_positive("adc.full_well_e", full_well_e)
     K_e_per_DN = _require_positive("emva.overall_system_gain_K_e_per_DN", K_e_per_DN)
+    # ISO amplifier gain: scales the ADC path without touching electron-domain quantities.
+    # K_eff = K_base / iso_gain  →  full_well_eff = full_well_base / iso_gain
+    _iso_gain = float(emva.get("iso_gain_factor", 1.0))
+    if _iso_gain <= 0:
+        raise ValueError(f"emva.iso_gain_factor must be positive, got {_iso_gain!r}")
+    _K_base = K_e_per_DN
+    _full_well_base = full_well_e
+    if _iso_gain != 1.0:
+        K_e_per_DN = K_e_per_DN / _iso_gain
+        full_well_e = full_well_e / _iso_gain
     use_poisson = bool(emva.get("use_poisson_shot_noise", True))
     t_int_s = float(sensor.get("integration_time_s", 0.01))
     if args.integration_time_s is not None:
@@ -783,8 +918,27 @@ def main() -> None:
     dark_ref_temp_c = float(emva.get("dark_current_reference_temp_c", 20.0))
     dark_temp_c = float(emva.get("temperature_c", dark_ref_temp_c))
     dark_doubling_c = float(emva.get("dark_current_doubling_per_c", 6.0))
+    dark_activation_energy_eV = float(emva.get("dark_activation_energy_eV", 0.0))
     row_fpn_std_e = float(emva.get("row_fpn_std_e", 0.0))
     col_fpn_std_e = float(emva.get("column_fpn_std_e", 0.0))
+    ktc_cfg = emva.get("ktc_noise", {}) or {}
+    ktc_enabled = bool(ktc_cfg.get("enabled", False))
+
+    # Stable per-camera seed for fixed spatial patterns (PRNU, DSNU).
+    # These represent physical properties of the sensor silicon that are the same
+    # across every frame from the same camera unit.
+    # If emva.spatial_noise_seed is set in YAML, use it directly.
+    # Otherwise, derive a reproducible integer from the config file path so each
+    # camera model gets its own unique but deterministic pattern.
+    _spatial_seed_cfg = emva.get("spatial_noise_seed", None)
+    if _spatial_seed_cfg is not None:
+        _spatial_seed = int(_spatial_seed_cfg)
+    else:
+        _spatial_seed = (
+            int(hashlib.sha256(str(cfg_path).encode()).hexdigest()[:16], 16) & 0x7FFFFFFF
+        )
+    spatial_rng = np.random.default_rng(_spatial_seed)
+
     adc_inl_quad_fraction = float(adc.get("inl_quadratic_fraction", 0.0))
     adc_dnl_std_lsb = float(adc.get("dnl_std_lsb", 0.0))
     _clipping_raw = adc.get("clipping", True)
@@ -865,15 +1019,35 @@ def main() -> None:
     else:
         if exr_mode == "integrate_qe":
             signal_source = "linear_exr_integrate_qe"
+            # Build calibration config for the full photon-counting physics.
+            # When using --camera-model-config, read from sensor_forward.model.calibration;
+            # otherwise fall back to sensible physics defaults.
+            if camera_model:
+                _sf_model = camera_model.get("sensor_forward", {}).get("model", {})
+                _cal_cfg = dict(_sf_model.get("calibration", {}))
+                _pbrt_block = _sf_model.get("pbrt_spectral_exr", {}) or {}
+                _cal_cfg.setdefault(
+                    "radiometric_autocalibration",
+                    str(_pbrt_block.get("radiometric_autocalibration", "off")),
+                )
+            else:
+                _cal_cfg = {}
+            if exposure_scale != 1.0:
+                print(
+                    f"note [integrate_qe]: processing.exposure_scale_e_per_unit={exposure_scale} "
+                    "is applied as a post-physics trim. After the radiometric fix the output "
+                    "is already in electrons; set to 1.0 unless you need a manual correction.",
+                    file=sys.stderr,
+                )
             try:
-                rgb = integrate_exr_spectral_qe(
+                e_nominal = integrate_exr_spectral_qe(
                     exr_in,
                     repo,
                     qe_cfg,
+                    sensor,
+                    _cal_cfg,
                     strict_qe_validation=strict_qe_validation,
                 )
-                rgb = np.clip(rgb, 0.0, None)
-                e_nominal = rgb
             except ValueError as exc:
                 # Some renders are RGB EXRs even when integrate_qe is configured.
                 # Fall back to per-channel QE scaling so mixed pipelines do not fail.
@@ -915,41 +1089,90 @@ def main() -> None:
     bayer_pat = str(bayer_cfg.get("pattern", "RGGB"))
     demosaic_on = bayer_on and demosaic_requested(bayer_cfg)
     demosaic_srgb = bool(bayer_cfg.get("demosaic_srgb", False))
+    spatial_xtalk_cfg = bayer_cfg.get("spatial_crosstalk", {}) or {}
 
     if bayer_on:
         signal_e = bayer_sample_rgb(signal_e, bayer_pat)
+        # Spatial inter-pixel diffusion crosstalk: must be applied after CFA sampling
+        # so that the blur acts on the RAW mosaic (R leaking to G/B wells, etc.).
+        # Applied before the noise chain so shot noise is drawn on the correct mean.
+        signal_e = apply_cfa_spatial_crosstalk(signal_e, spatial_xtalk_cfg)
 
-    # Fixed-pattern components.
-    prnu_map = 1.0 + rng.normal(0.0, prnu_std, size=signal_e.shape).astype(np.float32)
-    dark_temp_scale = 2.0 ** ((dark_temp_c - dark_ref_temp_c) / max(1e-6, dark_doubling_c))
+    # ---- Fixed spatial patterns (same for every frame from the same camera) ----
+    # PRNU: per-pixel multiplicative gain non-uniformity baked into the silicon.
+    # DSNU: per-pixel additive dark-signal offset due to leakage current variation.
+    # Both are sampled with spatial_rng, which is seeded from emva.spatial_noise_seed
+    # or (by default) a hash of the config path.  This guarantees that different cameras
+    # have different patterns while the same camera repeats the same pattern every run.
+    prnu_map = 1.0 + spatial_rng.normal(0.0, prnu_std, size=signal_e.shape).astype(np.float32)
+    if signal_e.ndim == 2:
+        dsnu_map = spatial_rng.normal(0.0, dsnu_std_e, size=signal_e.shape).astype(np.float32)
+    else:
+        dsnu_map = spatial_rng.normal(0.0, dsnu_std_e, size=signal_e.shape[:2]).astype(np.float32)
+        dsnu_map = dsnu_map[:, :, None]
+
+    # ---- Temporal frame noise (varies legitimately per frame) ----
+    # Dark current: mean electrons from temperature-scaled dark current rate.
+    if dark_activation_energy_eV > 0.0:
+        # Arrhenius model: I(T) / I(T0) = exp( (Ea/kB) * (1/T0 - 1/T) )
+        # More accurate than the doubling-rule approximation for large ΔT.
+        _K_B_EV = 8.617333262e-5  # Boltzmann constant [eV/K]
+        _T_K  = dark_temp_c + 273.15
+        _T0_K = dark_ref_temp_c + 273.15
+        dark_temp_scale = float(np.exp(
+            (dark_activation_energy_eV / _K_B_EV) * (1.0 / _T0_K - 1.0 / _T_K)
+        ))
+    else:
+        dark_temp_scale = 2.0 ** ((dark_temp_c - dark_ref_temp_c) / max(1e-6, dark_doubling_c))
     dark_mean_e = max(0.0, dark_current_e_per_s * t_int_s * dark_temp_scale)
-    dark_e = rng.poisson(dark_mean_e, size=signal_e.shape).astype(np.float32)
+
+    # Row/column readout amplifier noise: temporal banding that changes every frame.
     if signal_e.ndim == 2:
         row_fpn = rng.normal(0.0, row_fpn_std_e, size=(signal_e.shape[0], 1)).astype(np.float32)
         col_fpn = rng.normal(0.0, col_fpn_std_e, size=(1, signal_e.shape[1])).astype(np.float32)
-        rc_fpn = row_fpn + col_fpn
     else:
         row_fpn = rng.normal(0.0, row_fpn_std_e, size=(signal_e.shape[0], 1, 1)).astype(np.float32)
         col_fpn = rng.normal(0.0, col_fpn_std_e, size=(1, signal_e.shape[1], 1)).astype(np.float32)
-        rc_fpn = row_fpn + col_fpn
-    if signal_e.ndim == 2:
-        dsnu_map = rng.normal(0.0, dsnu_std_e, size=signal_e.shape).astype(np.float32)
-        signal_fpn_e = np.clip(signal_e * prnu_map + dsnu_map + rc_fpn + dark_e, 0.0, None)
-    else:
-        dsnu_map = rng.normal(0.0, dsnu_std_e, size=signal_e.shape[:2]).astype(np.float32)
-        dsnu_map = dsnu_map[:, :, None]
-        signal_fpn_e = np.clip(signal_e * prnu_map + dsnu_map + rc_fpn + dark_e, 0.0, None)
+    rc_fpn = row_fpn + col_fpn
 
+    # ---- Poisson shot noise on the true mean ----
+    # mean_e is the expected electron count per pixel:
+    #   signal × PRNU (per-pixel gain)  +  dark_mean (temp-scaled)  +  DSNU (per-pixel dark offset)
+    # PRNU and DSNU are spatially fixed; they shift the Poisson mean but do not add temporal variance.
+    # dark_mean contributes both a mean shift AND Poisson (shot) variance — included here correctly.
+    # rc_fpn and read_e are Gaussian readout noise processes, NOT Poisson — added after the draw.
+    mean_e = signal_e * prnu_map + dark_mean_e + dsnu_map
     if use_poisson:
-        shot_e = rng.poisson(np.maximum(signal_fpn_e, 0.0)).astype(np.float32)
+        shot_e = rng.poisson(np.maximum(mean_e, 0.0)).astype(np.float32)
     else:
-        shot_e = signal_fpn_e.astype(np.float32)
+        shot_e = np.maximum(mean_e, 0.0).astype(np.float32)
 
+    # ---- kTC reset noise (sense-node sampling uncertainty) ----
+    # Only relevant for sensors without correlated double sampling (CDS).
+    # CDS (standard in rolling-shutter BSI CMOS) cancels kTC noise entirely;
+    # disabled by default via noise.emva.ktc_noise.enabled: false.
+    sigma_ktc_e = 0.0
+    if ktc_enabled:
+        _K_B_J = 1.380649e-23       # Boltzmann constant [J/K]
+        _Q_E   = 1.602176634e-19    # elementary charge [C]
+        _T_K   = dark_temp_c + 273.15
+        if "node_capacitance_fF" in ktc_cfg:
+            _C = float(ktc_cfg["node_capacitance_fF"]) * 1e-15  # fF → F
+        else:
+            # Estimate C from conversion gain assuming a supply reference voltage.
+            # C = q · K[e/DN] · 2^bits / V_ref
+            _vref = float(ktc_cfg.get("vref_V", 1.8))
+            _C = K_e_per_DN * _Q_E * float(2 ** bit_depth) / _vref
+        sigma_ktc_e = float(np.sqrt(_K_B_J * _T_K * _C) / _Q_E)
+
+    # ---- Additive Gaussian readout noise (post-Poisson, includes kTC when enabled) ----
     read_e = rng.normal(0.0, sigma_d_e, size=signal_e.shape).astype(np.float32)
+    if sigma_ktc_e > 0.0:
+        read_e = read_e + rng.normal(0.0, sigma_ktc_e, size=signal_e.shape).astype(np.float32)
     if adc_clipping:
-        total_e = np.clip(shot_e + read_e, 0.0, full_well_e)
+        total_e = np.clip(shot_e + rc_fpn + read_e, 0.0, full_well_e)
     else:
-        total_e = np.clip(shot_e + read_e, 0.0, None)
+        total_e = np.clip(shot_e + rc_fpn + read_e, 0.0, None)
 
     max_dn = float((1 << bit_depth) - 1)
     if adc_clipping:
@@ -1076,14 +1299,18 @@ def main() -> None:
         "raw_out": str(raw_out),
         "png_dir": str(png_dir),
         "seed": args.seed,
+        "spatial_noise_seed": _spatial_seed,
         "signal_source": signal_source,
         "electrons_npz": str(electrons_npz) if electrons_npz is not None else None,
         "qe_relative_rgb": qe_vec.tolist(),
         "auto_exposure_enabled": auto_exposure,
         "exposure_scale_e_per_unit": exposure_scale,
         "bit_depth": bit_depth,
-        "full_well_e": full_well_e,
-        "K_e_per_DN": K_e_per_DN,
+        "iso_gain_factor": _iso_gain,
+        "K_base_e_per_DN": _K_base,
+        "K_effective_e_per_DN": K_e_per_DN,
+        "full_well_base_e": _full_well_base,
+        "full_well_effective_e": full_well_e,
         "black_level_DN": black_dn,
         "preview_white_balance_enabled": wb_enabled,
         "preview_white_balance_method": wb_method if wb_enabled else None,
@@ -1095,10 +1322,15 @@ def main() -> None:
         "dark_current_e_per_s": dark_current_e_per_s,
         "dark_current_reference_temp_c": dark_ref_temp_c,
         "temperature_c": dark_temp_c,
+        "dark_current_model": "arrhenius" if dark_activation_energy_eV > 0.0 else "doubling_rule",
+        "dark_activation_energy_eV": dark_activation_energy_eV if dark_activation_energy_eV > 0.0 else None,
         "dark_current_doubling_per_c": dark_doubling_c,
+        "dark_temp_scale": dark_temp_scale,
         "dark_mean_e_per_pixel": dark_mean_e,
         "row_fpn_std_e": row_fpn_std_e,
         "column_fpn_std_e": col_fpn_std_e,
+        "ktc_noise_enabled": ktc_enabled,
+        "sigma_ktc_e": sigma_ktc_e if ktc_enabled else None,
         "adc_inl_quadratic_fraction": adc_inl_quad_fraction,
         "adc_dnl_std_lsb": adc_dnl_std_lsb,
         "adc_clipping": adc_clipping,

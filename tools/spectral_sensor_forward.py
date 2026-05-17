@@ -388,7 +388,7 @@ def main() -> None:
     ircf = np.ones_like(wl)
     if ircf_csv:
         i_wl, i_v = read_csv_curve((repo / ircf_csv).resolve())
-        ircf = np.interp(wl, i_wl, i_v, left=0.0, right=0.0)
+        ircf = np.clip(np.interp(wl, i_wl, i_v, left=0.0, right=0.0), 0.0, 1.0)
 
     q_r, q_g, q_b = load_qe_curves_rgb(
         repo,

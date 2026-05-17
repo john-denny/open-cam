@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: xiaomi_mi_8
   display_name: Xiaomi MI 8
-lens_model: canon_eos_20d
+lens_model: phone_wide_f18
 sensor_model: xiaomi_mi_8
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

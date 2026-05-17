@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: samsung_galaxy_note_9
   display_name: Samsung Galaxy Note 9
-lens_model: canon_eos_20d
+lens_model: phone_wide_f18
 sensor_model: samsung_galaxy_note_9
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

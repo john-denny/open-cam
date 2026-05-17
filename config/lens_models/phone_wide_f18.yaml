@@ -1,0 +1,18 @@
+schema_version: 1
+# Phone-class wide-angle lens: f/1.8, 22 mm focal length (Nakamura wide-angle design).
+# Suitable for: smartphone cameras (~1.0–1.4 µm pixel pitch).
+# Aperture diameter = 22 mm / 1.8 = 12.2 mm.
+lens:
+  camera: realistic
+  realistic_lensfile: config/lenses/wide_22mm.dat
+  realistic_aperture_diameter_mm: 12.2
+  realistic_focus_distance: 1.0
+  post_psf:
+    enabled: false
+    mode: chromatic_gaussian
+    sigma_geometric_pixels: 0.35    # BSI pixel, tight optics
+    stray_light:
+      enabled: false
+      veiling_glare_fraction: 0.015
+      halo_sigma_pixels: 10.0
+      halo_strength: 0.06

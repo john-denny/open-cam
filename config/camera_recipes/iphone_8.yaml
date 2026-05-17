@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: iphone_8
   display_name: iPhone 8
-lens_model: iphone_8 # default
+lens_model: phone_wide_f18
 sensor_model: iphone_8
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

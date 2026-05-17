@@ -17,6 +17,21 @@ noise:
     use_poisson_shot_noise: true
     prnu_std_fraction: 0.01
     dsnu_std_e: 0.3
+    # ISO amplifier gain relative to base ISO.
+    # At base ISO (iso_gain_factor: 1.0) K_eff = K_base and full_well_eff = full_well_base.
+    # At higher ISO (iso_gain_factor > 1.0):
+    #   K_eff       = K_base       / iso_gain_factor  (fewer e per DN → brighter image)
+    #   full_well_eff = full_well_e / iso_gain_factor  (earlier ADC clip in electron space)
+    # All electron-domain quantities (sigma_d_e, prnu, dsnu, dark_current) are physical
+    # silicon properties and are NOT scaled — only the amplifier gain changes.
+    # Example: iso_gain_factor: 45 ≈ ISO 900 if base ISO is 20.
+    iso_gain_factor: 1.0
+    # Seed for the fixed spatial-pattern RNG (PRNU and DSNU maps).
+    # These patterns are the same every frame from the same camera unit.
+    # null = derive automatically from the config file path (different cameras
+    #        get different patterns; changing the path changes the pattern).
+    # integer = explicit override (useful for reproducible unit tests).
+    spatial_noise_seed: null
     dark_current_e_per_s: 0.15
     dark_current_reference_temp_c: 20.0
     temperature_c: 20.0
@@ -38,6 +53,17 @@ cfa:
   pattern: GBRG
   demosaic: bilinear
   demosaic_srgb: true
+  spatial_crosstalk:
+    # Spatial inter-pixel diffusion: convolve the CFA RAW with a normalised Gaussian
+    # of width sigma_pixels before the noise chain.  Models photon diffusion in the
+    # epitaxial layer that causes R/G/B well-to-well leakage (distinct from the global
+    # sensor.crosstalk 3x3 matrix which applies a uniform per-channel mix pre-CFA).
+    # Typical sigma values:
+    #   0.20 px  ~0.3 % leakage per nearest-neighbour  (low-crosstalk BSI)
+    #   0.30 px  ~1.5 % leakage per nearest-neighbour  (typical BSI CMOS, e.g. Sony IMX)
+    #   0.50 px  ~8 %  leakage per nearest-neighbour   (older FSI / large-pitch sensors)
+    enabled: false
+    sigma_pixels: 0.30
 sensor_forward:
   model:
     electrons_scale: 25000.0
@@ -79,5 +105,28 @@ validation:
     full_well_e: 4800
     black_level_DN: 16
     parameter_rtol: 0.02
+lens:
+  post_psf:
+    # Set enabled: true to apply a post-render Gaussian PSF to the spectral EXR.
+    # Two modes are available:
+    #
+    #   gaussian          – a single sigma_pixels applied to every channel (legacy).
+    #   chromatic_gaussian – wavelength-dependent blur per spectral bucket:
+    #                          σ_diff(λ) = 0.42 × N × λ_nm / (1000 × pixel_pitch_µm)
+    #                          σ(λ)      = sqrt( σ_diff(λ)² + σ_geom² )
+    #                        where N = f_number and σ_geom = sigma_geometric_pixels.
+    #                        f_number and pixel_pitch_um are read from sensor.f_number /
+    #                        sensor.pixel_pitch_um unless overridden here.
+    enabled: false
+    mode: chromatic_gaussian
+    sigma_pixels: 0.0                # used by 'gaussian' mode only
+    sigma_geometric_pixels: 0.5      # baseline geometric-aberration σ for 'chromatic_gaussian'
+    # f_number: null                 # override sensor.f_number (null = use sensor value)
+    # pixel_pitch_um: null           # override sensor.pixel_pitch_um (null = use sensor value)
+    stray_light:
+      enabled: false
+      veiling_glare_fraction: 0.01
+      halo_sigma_pixels: 15.0
+      halo_strength: 0.01
 model:
   name: default

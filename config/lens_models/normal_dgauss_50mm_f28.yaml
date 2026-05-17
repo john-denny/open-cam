@@ -1,0 +1,15 @@
+schema_version: 1
+# APS-C / MFT normal lens: Double-Gauss f/2.8, 50 mm.
+# Suitable for: APS-C and Micro Four Thirds cameras (~3.3–3.9 µm pixel pitch).
+# Source: config/lenses/dgauss.50mm.dat — US patent 2,673,491 (Tronnier, expired),
+#   as distributed in pbrt-v4-scenes (MIT licence).
+# Aperture diameter = 50 mm / 2.8 ≈ 17.9 mm.
+lens:
+  camera: realistic
+  realistic_lensfile: config/lenses/dgauss.50mm.dat
+  realistic_aperture_diameter_mm: 17.9
+  realistic_focus_distance: 1.0
+  post_psf:
+    enabled: false
+    mode: chromatic_gaussian
+    sigma_geometric_pixels: 0.50

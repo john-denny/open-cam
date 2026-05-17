@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: canon_eos_m6mii
   display_name: Canon EOS M6MII
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f28
 sensor_model: canon_eos_m6mii
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

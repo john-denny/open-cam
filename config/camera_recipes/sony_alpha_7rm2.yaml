@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: sony_alpha_7rm2
   display_name: Sony Alpha 7RM2
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f20
 sensor_model: sony_alpha_7rm2
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

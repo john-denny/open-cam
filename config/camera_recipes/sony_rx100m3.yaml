@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: sony_rx100m3
   display_name: Sony RX100M3
-lens_model: canon_eos_20d
+lens_model: compact_wide_f28
 sensor_model: sony_rx100m3
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

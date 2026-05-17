@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: google_pixel_3
   display_name: Google Pixel 3
-lens_model: canon_eos_20d
+lens_model: phone_wide_f18
 sensor_model: google_pixel_3
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

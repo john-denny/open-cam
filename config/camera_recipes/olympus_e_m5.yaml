@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: olympus_e_m5
   display_name: Olympus E-M5
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f28
 sensor_model: olympus_e_m5
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

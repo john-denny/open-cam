@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
-"""Helpers for loading and projecting camera model configs."""
+"""Helpers for loading and projecting camera model configs.
+
+Inheritance model
+-----------------
+Sensor model YAMLs (``config/sensor_models/*.yaml``) and lens model YAMLs
+(``config/lens_models/*.yaml``) are loaded with automatic **deep-merge
+inheritance** from a ``default.yaml`` base in the same directory.
+
+Deep-merge rules
+~~~~~~~~~~~~~~~~
+* Dict values are merged recursively; the specific YAML wins on any conflict.
+* All other types (scalars, lists, ``null``) in the specific YAML fully replace
+  the corresponding value from the base.
+* Lists are **not** appended — a list in the specific YAML entirely replaces the
+  base list.  This keeps validation level lists (``ptc_mu_e_levels``) predictable.
+* ``default.yaml`` itself does **not** inherit from anything (no self-reference).
+
+Writing a new camera model
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+A minimal sensor model only needs to declare keys that differ from
+``config/sensor_models/default.yaml``.  Keys that match the default can be
+omitted entirely — they will be filled in from the base at load time.  Existing
+full YAMLs continue to work unchanged (merging a complete override on top of the
+base is identical to using the override alone).
+"""
 
 from __future__ import annotations
 
@@ -7,12 +31,44 @@ from pathlib import Path
 
 import yaml
 
+_SENSOR_DEFAULTS_NAME = "default.yaml"
+_LENS_DEFAULTS_NAME = "default.yaml"
+
 
 def _load_yaml_mapping(path: Path) -> dict:
     cfg = yaml.safe_load(path.read_text()) or {}
     if not isinstance(cfg, dict):
         raise TypeError(f"YAML file must be a mapping: {path}")
     return cfg
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* on top of *base*.
+
+    Dict values are merged recursively.  All other types (scalars, lists,
+    ``null``) in *override* fully replace the corresponding *base* value.
+    Returns a new dict; neither input is mutated.
+    """
+    result = dict(base)
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
+def _load_with_defaults(path: Path, defaults_path: Path) -> dict:
+    """Load *path*, deep-merging it on top of *defaults_path* (if it exists).
+
+    If *path* IS the defaults file, or the defaults file does not exist, the
+    file is loaded without merging (avoids self-reference loops).
+    """
+    specific = _load_yaml_mapping(path)
+    if not defaults_path.is_file() or path.resolve() == defaults_path.resolve():
+        return specific
+    base = _load_yaml_mapping(defaults_path)
+    return deep_merge(base, specific)
 
 
 def _require_sections(cfg: dict, path: Path, sections: tuple[str, ...]) -> None:
@@ -34,6 +90,8 @@ def load_camera_model(path: Path) -> dict:
     cfg = _load_yaml_mapping(path)
     required_full = ("lens", "sensor", "noise", "cfa", "sensor_forward")
     if all(key in cfg for key in required_full):
+        # Full in-file model: deep-merge from defaults if a defaults file lives
+        # alongside (edge case: full camera model YAMLs in config/camera_models/).
         return cfg
 
     # Recipe mode: compose a full in-memory camera model from split files.
@@ -50,8 +108,13 @@ def load_camera_model(path: Path) -> dict:
     if not sensor_path.is_file():
         raise FileNotFoundError(f"missing sensor model config: {sensor_path}")
 
-    lens_cfg = _load_yaml_mapping(lens_path)
-    sensor_cfg = _load_yaml_mapping(sensor_path)
+    # Load each model file with defaults inheritance.
+    sensor_defaults = sensor_path.parent / _SENSOR_DEFAULTS_NAME
+    lens_defaults = lens_path.parent / _LENS_DEFAULTS_NAME
+
+    lens_cfg = _load_with_defaults(lens_path, lens_defaults)
+    sensor_cfg = _load_with_defaults(sensor_path, sensor_defaults)
+
     _require_sections(lens_cfg, lens_path, ("lens",))
     _require_sections(sensor_cfg, sensor_path, ("sensor", "noise", "cfa", "sensor_forward"))
 
@@ -76,6 +139,8 @@ def load_camera_model(path: Path) -> dict:
         "recipe": str(path),
         "lens_model": str(lens_path),
         "sensor_model": str(sensor_path),
+        "sensor_defaults": str(sensor_defaults) if sensor_defaults.is_file() else None,
+        "lens_defaults": str(lens_defaults) if lens_defaults.is_file() else None,
     }
     return composed
 
@@ -110,4 +175,3 @@ def sensor_forward_config_from_camera_model(
         "model": camera_model.get("sensor_forward", {}).get("model", {}),
         "output": {"electrons_npz": electrons_npz},
     }
-

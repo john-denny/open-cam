@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: konica_minolta_dynax7d
   display_name: Konica_Minolta Dynax7D
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f20
 sensor_model: konica_minolta_dynax7d
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

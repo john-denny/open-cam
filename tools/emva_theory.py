@@ -9,10 +9,16 @@ from __future__ import annotations
 import numpy as np
 
 
-def temporal_variance_electrons_squared(mu_e: float, sigma_d_e: float, *, use_poisson: bool) -> float:
-    """Variance of electron count after shot + read (before full-well clip)."""
+def temporal_variance_electrons_squared(
+    mu_e: float,
+    sigma_d_e: float,
+    *,
+    use_poisson: bool,
+    sigma_ktc_e: float = 0.0,
+) -> float:
+    """Variance of electron count after shot + read + optional kTC (before full-well clip)."""
     v_shot = float(mu_e) if use_poisson else 0.0
-    return v_shot + float(sigma_d_e) ** 2
+    return v_shot + float(sigma_d_e) ** 2 + float(sigma_ktc_e) ** 2
 
 
 def temporal_variance_dn_squared(
@@ -21,9 +27,15 @@ def temporal_variance_dn_squared(
     K_e_per_DN: float,
     *,
     use_poisson: bool,
+    sigma_ktc_e: float = 0.0,
 ) -> float:
     """Var(DN) for temporal noise only (no PRNU/DSNU), linear regime, no saturation."""
-    return temporal_variance_electrons_squared(mu_e, sigma_d_e, use_poisson=use_poisson) / float(K_e_per_DN) ** 2
+    return (
+        temporal_variance_electrons_squared(
+            mu_e, sigma_d_e, use_poisson=use_poisson, sigma_ktc_e=sigma_ktc_e
+        )
+        / float(K_e_per_DN) ** 2
+    )
 
 
 def dark_floor_clip_mean_var_dn(
@@ -58,6 +70,7 @@ def monte_carlo_temporal_dn_stats(
     full_well_e: float | None,
     n_trials: int,
     seed: int,
+    sigma_ktc_e: float = 0.0,
 ) -> tuple[float, float]:
     """Return (mean DN, sample variance of DN) from independent temporal draws."""
     rng = np.random.default_rng(seed)
@@ -66,6 +79,8 @@ def monte_carlo_temporal_dn_stats(
     else:
         e = np.full(n_trials, mu_e, dtype=np.float64)
     e = e + rng.normal(0.0, sigma_d_e, size=n_trials)
+    if sigma_ktc_e > 0.0:
+        e = e + rng.normal(0.0, sigma_ktc_e, size=n_trials)
     fw = float(full_well_e) if full_well_e is not None else np.inf
     e = np.clip(e, 0.0, fw)
     dn = e / float(K_e_per_DN) + float(black_dn)

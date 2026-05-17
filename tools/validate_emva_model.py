@@ -94,7 +94,7 @@ def main() -> None:
     emva = noise.get("emva", {})
     adc = noise.get("adc", {})
 
-    K = float(emva.get("overall_system_gain_K_e_per_DN", 0.08))
+    K_base = float(emva.get("overall_system_gain_K_e_per_DN", 0.08))
     sigma_d = float(emva.get("sigma_d_e", 2.0))
     black = float(emva.get("black_level_DN", 64.0))
     use_poisson = bool(emva.get("use_poisson_shot_noise", True))
@@ -103,8 +103,12 @@ def main() -> None:
             "adc.full_well_e is required but not set in the sensor config. "
             "This value determines the ADC clipping point; there is no safe generic default."
         )
-    full_well = float(adc["full_well_e"])
+    full_well_base = float(adc["full_well_e"])
     bit_depth_cfg = int(adc.get("bit_depth", 12))
+    # Apply ISO amplifier gain: K_eff = K_base / iso_gain, full_well_eff = full_well / iso_gain
+    iso_gain = float(emva.get("iso_gain_factor", 1.0))
+    K = K_base / max(iso_gain, 1e-9)
+    full_well = full_well_base / max(iso_gain, 1e-9)
 
     mc_trials = int(val.get("monte_carlo_trials", 20_000))
     seed = int(val.get("random_seed", 0))
@@ -192,14 +196,16 @@ def main() -> None:
         ds_gain_conv = str(ds.get("gain_convention", "e_per_dn")).strip().lower()
         ds_bit_depth = ds.get("bit_depth", None)
         ds_bit_depth_int = int(ds_bit_depth) if ds_bit_depth is not None else None
+        # Compare base-ISO parameters to datasheet; iso_gain shifts the operating
+        # point but the datasheet records physical sensor properties at base ISO.
         param_cmp = compare_config_to_datasheet(
-            K,
+            K_base,
             sigma_d,
-            full_well,
+            full_well_base,
             black,
             float(ds_block["overall_system_gain_K_e_per_DN"]),
             float(ds_block.get("temporal_dark_noise_sigma_d_e", sigma_d)),
-            float(ds_block.get("full_well_e", full_well)),
+            float(ds_block.get("full_well_e", full_well_base)),
             float(ds_block.get("black_level_DN", black)),
             rtol,
             bit_depth_cfg=bit_depth_cfg,
@@ -212,10 +218,13 @@ def main() -> None:
         "noise_config": "embedded_in_camera_model",
         "monte_carlo_trials": mc_trials,
         "model": {
-            "K_e_per_DN": K,
+            "iso_gain_factor": iso_gain,
+            "K_base_e_per_DN": K_base,
+            "K_effective_e_per_DN": K,
             "sigma_d_e": sigma_d,
             "black_level_DN": black,
-            "full_well_e": full_well,
+            "full_well_base_e": full_well_base,
+            "full_well_effective_e": full_well,
             "use_poisson_shot_noise": use_poisson,
         },
         "dark_frame": {

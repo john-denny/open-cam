@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: canon_powershot_g5_x
   display_name: Canon Powershot G5 X
-lens_model: canon_eos_20d
+lens_model: compact_wide_f28
 sensor_model: canon_powershot_g5_x
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

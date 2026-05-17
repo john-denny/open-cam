@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: huawei_mate_20_pro
   display_name: Huawei Mate 20 Pro
-lens_model: canon_eos_20d
+lens_model: phone_wide_f18
 sensor_model: huawei_mate_20_pro
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

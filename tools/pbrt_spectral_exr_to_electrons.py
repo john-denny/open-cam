@@ -152,7 +152,7 @@ def qe_stack_on_lambdas(
     ircf = np.ones_like(lambdas_nm, dtype=np.float64)
     if ircf_csv:
         i_wl, i_v = read_csv_curve((repo / ircf_csv).resolve())
-        ircf = np.interp(lambdas_nm, i_wl, i_v, left=0.0, right=0.0)
+        ircf = np.clip(np.interp(lambdas_nm, i_wl, i_v, left=0.0, right=0.0), 0.0, 1.0)
     out = []
     q_r, q_g, q_b = load_qe_curves_rgb(
         repo,

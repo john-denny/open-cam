@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: leica_m_type_262
   display_name: Leica M Type 262
-lens_model: canon_eos_20d
+lens_model: normal_dgauss_50mm_f20
 sensor_model: leica_m_type_262
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

@@ -2,7 +2,7 @@ schema_version: 1
 model:
   name: nikon_z6
   display_name: Nikon Z6
-lens_model: research_realistic_wide22
+lens_model: normal_dgauss_50mm_f20
 sensor_model: nikon_z6
 source:
   qe_workbook: spectra/QE/Spectral_sensitivities_IE.xlsx

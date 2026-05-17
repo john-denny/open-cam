@@ -59,7 +59,7 @@ strict_physical_accuracy:
   strict_calibration_validation: false
   calibration_tier_policy: semi_strict
 realistic_focus_distance_override: 4.0
-exposure_time_override_s: 0.01
+exposure_time_override_s: 0.06
 sensor_forward:
   mode: pbrt_exr
   enabled: true
