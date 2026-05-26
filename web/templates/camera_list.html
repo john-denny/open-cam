@@ -1,0 +1,14 @@
+{% for group in groups %}
+<details class="brand-group" {% if loop.index <= 4 %}open{% endif %}>
+  <summary>{{ group.brand }} <span style="color:var(--text-dim);font-weight:400">({{ group.cameras|length }})</span></summary>
+  {% for cam in group.cameras %}
+  <div
+    class="camera-item{% if cam.name == (camera_name | default('')) %} active{% endif %}"
+    onclick="selectCamera('{{ cam.name }}', this)"
+    title="{{ cam.name }}"
+  >{{ cam.display }}</div>
+  {% endfor %}
+</details>
+{% else %}
+<div style="padding:16px;color:var(--text-dim);font-size:12px">No cameras match "{{ query }}"</div>
+{% endfor %}

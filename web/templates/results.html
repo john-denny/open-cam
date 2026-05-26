@@ -1,0 +1,125 @@
+{% if results %}
+{% set imgs = results.get('images', {}) %}
+{% set emva = results.get('emva') %}
+{% set demosaic = results.get('demosaic') %}
+{% set manifest = results.get('manifest') %}
+
+<!-- View toggle -->
+<div class="toggle-row">
+  <div class="toggle-btn active" id="btn-rgb" onclick="setView('rgb')">RGB</div>
+  <div class="toggle-btn" id="btn-demosaic" onclick="setView('demosaic')">Demosaic</div>
+</div>
+
+<!-- Image grid: RGB view -->
+<div class="img-grid view-rgb">
+  {% if imgs.get('clean_rgb') %}
+  <div class="img-tile">
+    <img src="{{ imgs.clean_rgb }}" alt="clean rgb" loading="lazy">
+    <span>Clean</span>
+  </div>
+  {% endif %}
+  {% if imgs.get('noisy_rgb') %}
+  <div class="img-tile">
+    <img src="{{ imgs.noisy_rgb }}" alt="noisy rgb" loading="lazy">
+    <span>Noisy</span>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Image grid: Demosaic view -->
+<div class="img-grid view-demosaic" style="display:none">
+  {% if imgs.get('clean_demosaic') %}
+  <div class="img-tile">
+    <img src="{{ imgs.clean_demosaic }}" alt="clean demosaic" loading="lazy">
+    <span>Clean (demosaic)</span>
+  </div>
+  {% endif %}
+  {% if imgs.get('noisy_demosaic') %}
+  <div class="img-tile">
+    <img src="{{ imgs.noisy_demosaic }}" alt="noisy demosaic" loading="lazy">
+    <span>Noisy (demosaic)</span>
+  </div>
+  {% endif %}
+</div>
+
+{% if imgs.get('bayer_mono') %}
+<details style="margin-top:-4px">
+  <summary style="font-size:11px;color:var(--text-dim);cursor:pointer;padding:2px 0">Raw Bayer mosaic</summary>
+  <div class="img-tile" style="margin-top:6px">
+    <img src="{{ imgs.bayer_mono }}" alt="bayer mono" loading="lazy">
+  </div>
+</details>
+{% endif %}
+
+<!-- EMVA card -->
+{% if emva %}
+{% set m = emva.get('model', {}) %}
+<div class="card">
+  <div class="card-title">
+    EMVA Validation
+    {% if emva.get('all_ok') %}
+    <span class="badge badge-ok">PASS</span>
+    {% else %}
+    <span class="badge badge-fail">FAIL</span>
+    {% endif %}
+  </div>
+  <table class="metric-table">
+    <tr><td>K (e⁻/DN)</td><td>{{ "%.4f"|format(m.get('K_effective_e_per_DN', m.get('K_base_e_per_DN', 0))) }}</td></tr>
+    <tr><td>σ_d (e⁻)</td><td>{{ "%.2f"|format(m.get('sigma_d_e', 0)) }}</td></tr>
+    <tr><td>Full well (e⁻)</td><td>{{ "%.0f"|format(m.get('full_well_effective_e', m.get('full_well_base_e', 0))) }}</td></tr>
+    <tr><td>Black level (DN)</td><td>{{ "%.0f"|format(m.get('black_level_DN', 0)) }}</td></tr>
+    <tr><td>ISO gain</td><td>{{ "%.1f"|format(m.get('iso_gain_factor', 1.0)) }}×</td></tr>
+  </table>
+  {% set cal = emva.get('calibration_quality', {}) %}
+  {% if cal %}
+  <div style="margin-top:8px;font-size:10px;color:var(--text-dim)">
+    Tier: <span style="color:var(--text)">{{ cal.get('calibration_tier', '—') }}</span>
+    &nbsp;·&nbsp; Method: <span style="color:var(--text)">{{ cal.get('emva_param_method', '—') }}</span>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- Demosaic card -->
+{% if demosaic %}
+{% set mae_rgb = demosaic.get('mae_dn_rgb', [0,0,0]) %}
+{% set max_mae = [mae_rgb[0], mae_rgb[1], mae_rgb[2]] | max %}
+<div class="card">
+  <div class="card-title">Demosaic Metrics</div>
+  <table class="metric-table">
+    <tr><td>MAE (DN)</td><td>{{ "%.4f"|format(demosaic.get('mae_dn', 0)) }}</td></tr>
+    <tr><td>RMSE (DN)</td><td>{{ "%.4f"|format(demosaic.get('rmse_dn', 0)) }}</td></tr>
+    <tr><td>Max |err| (DN)</td><td>{{ "%.2f"|format(demosaic.get('max_abs_dn', 0)) }}</td></tr>
+    <tr><td>Pattern</td><td>{{ demosaic.get('pattern', '—') }}</td></tr>
+  </table>
+  <div class="bar-chart">
+    {% set labels = ['R','G','B'] %}
+    {% set colors = ['bar-r','bar-g','bar-b'] %}
+    {% for i in range(3) %}
+    {% set pct = ((mae_rgb[i] / max_mae * 100) if max_mae > 0 else 0) | int %}
+    <div class="bar-row">
+      <span class="bar-label">{{ labels[i] }}</span>
+      <div class="bar-track"><div class="bar-fill {{ colors[i] }}" style="width:{{ pct }}%"></div></div>
+      <span class="bar-val">{{ "%.3f"|format(mae_rgb[i]) }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Manifest -->
+{% if manifest %}
+<div class="card">
+  <details class="manifest-details">
+    <summary>Run manifest ({{ manifest.get('timestamp_utc','') }})</summary>
+    <pre>{{ manifest | tojson(indent=2) }}</pre>
+  </details>
+</div>
+{% endif %}
+
+{% else %}
+<div class="results-placeholder">
+  <div style="font-size:24px;margin-bottom:8px">📷</div>
+  Run the pipeline to see results
+</div>
+{% endif %}
