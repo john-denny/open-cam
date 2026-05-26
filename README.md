@@ -9,6 +9,7 @@ Open Cam is a physically motivated camera simulation pipeline. It renders a Colo
 - Noisy RAW Bayer output (`.raw16`)
 - Preview PNGs (clean/noisy, optional demosaic)
 - Validation reports and run manifest JSON files
+- Web UI for easier pipeline config, live log streaming and in browser outputs
 
 Main output folder: `out/`
 
@@ -44,12 +45,36 @@ venv/bin/python tools/run_pipeline.py --config config/pipeline.yaml
 - `out/colorchecker_noisy_png/run_stats.json`
 - `out/run_pipeline_<timestamp>.json`
 
+## Web UI
+
+A browser-based frontend lets you pick a camera, configure render and noise
+parameters, launch a pipeline run, and inspect outputs, all without touching
+YAML or the command line.
+
+Start the server:
+
+```bash
+venv/bin/uvicorn web.main:app --reload
+```
+
+Then open `http://localhost:8000` in a browser.
+
+Features:
+
+- Camera browser grouped by brand (Canon, Nikon, Sony)
+- Full pipeline configuration form (resolution, illuminant, lens type, noise seed, ...)
+- Live log streaming while the pipeline runs
+- Output viewer — preview PNGs, EMVA validation report, demosaic metrics, run manifest
+- Dry-run mode to inspect generated commands before launching a real run
+
 ## Requirements
 
 - Linux/macOS with Python 3
 - PBRT binary at `third_party/pbrt-v4/build/pbrt`
 - Python packages in `requirements.txt`:
   - `numpy`, `scipy`, `PyYAML`, `imageio`, `OpenEXR`, `openpyxl`
+  - `fastapi`, `uvicorn`, `jinja2`, `python-multipart` — web UI server
+  - `httpx` — async HTTP client used by web tests
 
 `OpenEXR` is required for multispectral EXR channel handling (`S0.*nm`).
 
@@ -291,6 +316,7 @@ venv/bin/python tools/munsell_mat_to_sqlite.py --summary
 Before opening a PR:
 
 - `PYTHONPATH=tools:. venv/bin/python -m unittest discover -s tests -v`
+- `PYTHONPATH=tools:. venv/bin/python -m unittest tests/test_web.py -v`
 - `venv/bin/python tools/run_pipeline.py --config config/pipeline.yaml --dry-run`
 
 Keep generated artifacts (`out/`, `scenes/generated/`) out of commits unless a change explicitly requires them.
