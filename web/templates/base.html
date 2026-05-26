@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>open-cam</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+<body>
+<div id="shell">
+
+  <header>
+    <h1>open-<span>cam</span></h1>
+    <div class="header-actions">
+      <span id="run-status" style="font-size:12px;color:var(--text-dim)"></span>
+    </div>
+  </header>
+
+  <div id="columns">
+
+    <!-- ── Sidebar ── -->
+    <aside id="sidebar">
+      <div id="search-wrap">
+        <input
+          type="text" placeholder="Search cameras…" autocomplete="off"
+          hx-get="/cameras" hx-trigger="input changed delay:200ms" hx-target="#camera-list"
+          hx-include="[name='q']" name="q"
+        >
+      </div>
+      <div id="camera-list">
+        {% include "camera_list.html" %}
+      </div>
+    </aside>
+
+    <!-- ── Config Panel ── -->
+    <main id="config-panel">
+      <div id="config-inner">
+        {% include "config_form.html" %}
+      </div>
+
+      <div id="progress-wrap"></div>
+
+      <div id="run-bar">
+        <button class="btn btn-primary" id="run-btn" onclick="submitRun()">▶ Run</button>
+        <label class="checkbox-row" style="font-size:12px">
+          <input type="checkbox" id="dry-run-check"> Dry run
+        </label>
+        <span id="run-spinner" style="display:none;font-size:12px;color:var(--text-dim)">⏳ Running…</span>
+      </div>
+    </main>
+
+    <!-- ── Results Panel ── -->
+    <aside id="results-panel">
+      {% if results %}
+        {% include "results.html" %}
+      {% else %}
+        <div class="results-placeholder">
+          <div style="font-size:24px;margin-bottom:8px">📷</div>
+          Run the pipeline to see results
+        </div>
+      {% endif %}
+    </aside>
+
+  </div>
+</div>
+
+<script>
+// Track the active camera
+let activeCamera = "{{ camera_name }}";
+
+function selectCamera(name, el) {
+  document.querySelectorAll('.camera-item').forEach(e => e.classList.remove('active'));
+  el.classList.add('active');
+  activeCamera = name;
+  htmx.ajax('GET', '/cameras/' + name + '/config-form', {target: '#config-inner', swap: 'innerHTML'});
+}
+
+async function submitRun() {
+  const form = document.getElementById('pipeline-form');
+  if (!form) return;
+  const data = new FormData(form);
+  data.set('camera_name', activeCamera);
+  data.set('dry_run', document.getElementById('dry-run-check').checked ? 'true' : 'false');
+
+  document.getElementById('run-btn').disabled = true;
+  document.getElementById('run-spinner').style.display = 'inline';
+  document.getElementById('run-status').textContent = '';
+
+  const pw = document.getElementById('progress-wrap');
+  pw.innerHTML = '';
+  pw.classList.add('active');
+
+  const resp = await fetch('/run', {method: 'POST', body: data});
+  const {job_id} = await resp.json();
+
+  const es = new EventSource('/run/' + job_id + '/stream');
+  es.onmessage = e => {
+    const line = document.createElement('div');
+    line.className = 'log-line';
+    line.textContent = e.data;
+    pw.appendChild(line);
+    pw.scrollTop = pw.scrollHeight;
+  };
+  es.addEventListener('complete', async e => {
+    es.close();
+    document.getElementById('run-btn').disabled = false;
+    document.getElementById('run-spinner').style.display = 'none';
+    const ok = e.data === 'done';
+    document.getElementById('run-status').textContent = ok ? '✓ Done' : '✗ Failed';
+    document.getElementById('run-status').style.color = ok ? 'var(--green)' : 'var(--red)';
+    if (ok) {
+      const html = await fetch('/run/' + job_id + '/results').then(r => r.text());
+      document.getElementById('results-panel').innerHTML = html;
+    }
+  });
+  es.onerror = () => {
+    es.close();
+    document.getElementById('run-btn').disabled = false;
+    document.getElementById('run-spinner').style.display = 'none';
+  };
+}
+
+// Lens type conditional fields
+document.addEventListener('htmx:afterSettle', () => updateLensFields());
+document.addEventListener('DOMContentLoaded', () => updateLensFields());
+
+function updateLensFields() {
+  const sel = document.getElementById('lens-type-select');
+  if (!sel) return;
+  sel.addEventListener('change', () => _showLensFields(sel.value));
+  _showLensFields(sel.value);
+}
+
+function _showLensFields(type) {
+  const sel = document.getElementById('lens-type-select');
+  const effective = type || (sel ? sel.dataset.modelType : 'pinhole');
+  const show = id => { const el = document.getElementById(id); if (el) el.closest('label').style.display = ''; };
+  const hide = id => { const el = document.getElementById(id); if (el) el.closest('label').style.display = 'none'; };
+  ['field-lensfile','field-aperture','field-focus','field-fov'].forEach(hide);
+  if (effective === 'realistic') { show('field-lensfile'); show('field-aperture'); show('field-focus'); }
+  else if (effective === 'thinlens') { show('field-fov'); show('field-focus'); }
+  else if (effective === 'pinhole') { show('field-fov'); }
+}
+
+// ── Tooltip ──────────────────────────────────────────────
+const _tt = document.createElement('div');
+_tt.id = 'global-tooltip';
+document.body.appendChild(_tt);
+
+document.addEventListener('mouseover', e => {
+  const el = e.target.closest('[data-tip]');
+  if (!el) { _tt.style.display = 'none'; return; }
+  _tt.textContent = el.dataset.tip;
+  _tt.style.display = 'block';
+  const r = el.getBoundingClientRect();
+  let top = r.top - _tt.offsetHeight - 8;
+  let left = r.left + r.width / 2 - _tt.offsetWidth / 2;
+  // flip below if not enough space above
+  if (top < 6) top = r.bottom + 8;
+  // clamp horizontally
+  left = Math.max(6, Math.min(left, window.innerWidth - _tt.offsetWidth - 6));
+  _tt.style.top = top + 'px';
+  _tt.style.left = left + 'px';
+});
+document.addEventListener('mouseout', e => {
+  if (!e.relatedTarget || !e.relatedTarget.closest('[data-tip]')) _tt.style.display = 'none';
+});
+
+// Image view toggle (rgb / demosaic)
+function setView(mode) {
+  document.querySelectorAll('.view-rgb').forEach(e => e.style.display = mode === 'rgb' ? '' : 'none');
+  document.querySelectorAll('.view-demosaic').forEach(e => e.style.display = mode === 'demosaic' ? '' : 'none');
+  document.querySelectorAll('.toggle-btn').forEach(e => e.classList.remove('active'));
+  document.getElementById('btn-' + mode).classList.add('active');
+}
+</script>
+</body>
+</html>

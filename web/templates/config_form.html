@@ -1,0 +1,194 @@
+{% set r = pipeline.get('render', {}) %}
+{% set lo = pipeline.get('lens_overrides', {}) or {} %}
+{% set sf = pipeline.get('sensor_forward', {}) %}
+{% set n = pipeline.get('noise', {}) %}
+{% set v = pipeline.get('validate', {}) %}
+{% set ve = pipeline.get('validate_emva', {}) %}
+{% set vd = pipeline.get('validate_demosaic', {}) %}
+{% set adv = pipeline.get('strict_physical_accuracy', {}) or {} %}
+{% set lens = cam_cfg.get('lens', {}) if cam_cfg else {} %}
+
+{# derive current illuminant name from path #}
+{% set illum_path = r.get('illuminant', 'spectra/illuminant/interpolated/D65.csv') %}
+{% set illum_name = illum_path.split('/')[-1].replace('.csv','') if illum_path else 'D65' %}
+
+{# current lens type #}
+{% set lens_type = pipeline.get('lens_type_override') or lens.get('camera', 'pinhole') %}
+
+{% macro tip(text) %}<span class="tip" data-tip="{{ text }}"><i class="tip-icon">i</i></span>{% endmacro %}
+
+<form id="pipeline-form">
+
+  <!-- Render -->
+  <details class="section" open>
+    <summary>Render</summary>
+    <div class="section-body">
+      <label><span>Width (px) {{ tip("Output image width in pixels.") }}</span>
+        <input type="number" name="xres" value="{{ r.get('xres', 960) }}" min="64" step="1">
+      </label>
+      <label><span>Height (px) {{ tip("Output image height in pixels.") }}</span>
+        <input type="number" name="yres" value="{{ r.get('yres', 640) }}" min="64" step="1">
+      </label>
+      <label><span>Pixel samples {{ tip("Monte Carlo samples per pixel.\n64 = fast preview\n≥1024 = final quality\nMore samples = less render noise.") }}</span>
+        <input type="number" name="pixelsamples" value="{{ r.get('pixelsamples', 64) }}" min="1" step="1">
+      </label>
+      <label><span>Light scale {{ tip("Multiplier on scene light intensity.\nIncrease if the image is underexposed.") }}</span>
+        <input type="number" name="light_scale" value="{{ r.get('light_scale', 2.0) }}" step="0.1" min="0.01">
+      </label>
+      <label><span>Camera distance (m) {{ tip("Distance from the camera to the\nColorChecker chart in metres.") }}</span>
+        <input type="number" name="cam_dist" value="{{ r.get('cam_dist', 4.25) }}" step="0.1" min="0.1">
+      </label>
+      <label><span>Film {{ tip("Spectral: renders 32 wavelength buckets\nfor accurate QE integration. Slower.\nRGB: single RGB pass. Faster but less\nphysically accurate.") }}</span>
+        <select name="film">
+          <option value="rgb" {% if r.get('film','rgb')=='rgb' %}selected{% endif %}>RGB</option>
+          <option value="spectral" {% if r.get('film')=='spectral' %}selected{% endif %}>Spectral</option>
+        </select>
+      </label>
+      <label style="grid-column:1/-1"><span>Illuminant {{ tip("The light source spectrum used to illuminate\nthe scene. D65 = standard daylight (6500 K).\nD55 = slightly warmer (5500 K).") }}</span>
+        <select name="illuminant">
+          {% for ill in illuminants %}
+          <option value="{{ ill }}" {% if ill == illum_name %}selected{% endif %}>{{ ill }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+  </details>
+
+  <!-- Lens -->
+  <details class="section" open>
+    <summary>Lens</summary>
+    <div class="section-body">
+      <label style="grid-column:1/-1"><span>Type override {{ tip("Sets the lens simulation mode.\n\"Camera model default\" uses the type baked\ninto the selected camera recipe — no override.\nAny other selection forces that mode for\nthis run only, leaving the recipe unchanged.\n\nPinhole: no aberrations or DoF.\nThin lens: basic depth of field.\nRealistic: full ray-traced optics via a\nmulti-element lens prescription file.") }}</span>
+        <select name="lens_type_override" id="lens-type-select" data-model-type="{{ lens.get('camera', 'pinhole') }}">
+          <option value="" {% if not pipeline.get('lens_type_override') %}selected{% endif %}>Camera model default ({{ lens.get('camera','—') }})</option>
+          <option value="pinhole" {% if lens_type=='pinhole' and pipeline.get('lens_type_override') %}selected{% endif %}>Pinhole</option>
+          <option value="thinlens" {% if lens_type=='thinlens' and pipeline.get('lens_type_override') %}selected{% endif %}>Thin lens</option>
+          <option value="realistic" {% if lens_type=='realistic' and pipeline.get('lens_type_override') %}selected{% endif %}>Realistic</option>
+        </select>
+      </label>
+      <label id="field-lensfile" style="grid-column:1/-1"><span>Lens file {{ tip("Physical lens prescription used in realistic\nmode. Each file describes a real multi-element\nlens design with accurate aberrations,\nvignetting, and distortion.") }}</span>
+        {% set cur_lensfile = lo.get('realistic_lensfile') or lens.get('realistic_lensfile', '') %}
+        <select name="lensfile">
+          <option value="">Camera model default{% if cur_lensfile %} ({{ cur_lensfile.split('/')[-1] }}){% endif %}</option>
+          {% for lf in lensfiles %}
+          <option value="{{ lf.path }}" {% if cur_lensfile and lf.path in cur_lensfile %}selected{% endif %}>{{ lf.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label id="field-aperture"><span>Aperture (mm) {{ tip("Lens aperture diameter in mm.\nLarger = more light, shallower depth of field.\nLeave blank to use the camera model value.") }}</span>
+        <input type="number" name="aperture_mm"
+          value="{{ lo.get('realistic_aperture_diameter_mm') or lens.get('realistic_aperture_diameter_mm', '') }}"
+          step="0.1" min="0.1" placeholder="from model">
+      </label>
+      <label id="field-focus"><span>Focus distance (m) {{ tip("Distance to the focal plane in metres.\nObjects at this distance will be sharpest.") }}</span>
+        <input type="number" name="focus_distance"
+          value="{{ pipeline.get('realistic_focus_distance_override') or lo.get('realistic_focus_distance') or lens.get('realistic_focus_distance', '') }}"
+          step="0.1" min="0.1" placeholder="from model">
+      </label>
+      <label id="field-fov"><span>FOV (deg) {{ tip("Horizontal field of view in degrees.\nLeave blank to use the camera model value.") }}</span>
+        <input type="number" name="fov_deg"
+          value="{{ lo.get('pinhole_fov_deg') or lo.get('thinlens_fov_deg') or lens.get('pinhole_fov_deg') or lens.get('thinlens_fov_deg', '') }}"
+          step="1" min="1" max="179" placeholder="from model">
+      </label>
+    </div>
+  </details>
+
+  <!-- Sensor Forward -->
+  <details class="section" open>
+    <summary>Sensor Forward</summary>
+    <div class="section-body">
+      <label style="grid-column:1/-1"><span>Mode {{ tip("pbrt_exr: integrates the camera's QE curves\nagainst the spectral render — most accurate.\nanalytic: uses an RGB render with a simpler\nradiometric model.") }}</span>
+        <select name="sf_mode">
+          <option value="analytic" {% if sf.get('mode','analytic')=='analytic' %}selected{% endif %}>analytic (RGB EXR)</option>
+          <option value="pbrt_exr" {% if sf.get('mode')=='pbrt_exr' %}selected{% endif %}>pbrt_exr (spectral EXR → electrons)</option>
+        </select>
+      </label>
+      <label><span>Target illuminance (lux) {{ tip("Scene illuminance used to calibrate the\nelectron count scale. 200 lx ≈ dim indoor\nlight. 10000 lx ≈ bright overcast sky.") }}</span>
+        <input type="number" name="target_lux" value="{{ sf.get('target_illuminance_lux', 200) }}" step="10" min="1">
+      </label>
+      <label><span>Exposure time (s) {{ tip("Sensor integration time in seconds.\nLonger exposure = more electrons accumulated\n= brighter image, more dark current noise.") }}</span>
+        <input type="number" name="exposure_time" value="{{ pipeline.get('exposure_time_override_s', 0.06) }}" step="0.001" min="0.0001">
+      </label>
+    </div>
+  </details>
+
+  <!-- Noise -->
+  <details class="section">
+    <summary>Noise</summary>
+    <div class="section-body">
+      <label><span>RNG seed {{ tip("Fixes the random number generator so noise\npatterns are reproducible across runs.\nChange to get a different noise realisation.") }}</span>
+        <input type="number" name="noise_seed" value="{{ n.get('seed', 0) }}" step="1" min="0">
+      </label>
+      <label><span>Exposure scale {{ tip("Manual override for the exposure scaling\nfactor applied before noise. Leave blank\nto use the model default.") }}</span>
+        <input type="text" name="exposure_scale" value="{{ n.get('exposure_scale', '') or '' }}" placeholder="null">
+      </label>
+      <label style="grid-column:1/-1" class="checkbox-row">
+        <input type="checkbox" name="wb_enabled" value="true" {% if n.get('preview_white_balance_enabled') %}checked{% endif %}>
+        Preview white balance
+        {{ tip("Apply per-channel white balance gains in\nthe preview PNG. Does not affect the RAW.") }}
+      </label>
+      <label style="grid-column:1/-1" class="checkbox-row">
+        <input type="checkbox" name="ccm_enabled" value="true" {% if n.get('preview_color_correction_enabled') %}checked{% endif %}>
+        Preview color correction
+        {{ tip("Apply a 3×3 color correction matrix in\nthe preview PNG. Does not affect the RAW.") }}
+      </label>
+    </div>
+  </details>
+
+  <!-- Validation -->
+  <details class="section">
+    <summary>Validation</summary>
+    <div class="section-body single">
+      <label class="checkbox-row">
+        <input type="checkbox" name="validate_cc" value="true" {% if pipeline.get('validate',{}).get('enabled', True) %}checked{% endif %}>
+        Colorchecker render validation
+        {{ tip("Sanity-checks the rendered EXR: finite values,\nnon-zero signal, plausible intensity range.") }}
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" name="validate_emva" value="true" {% if pipeline.get('validate_emva',{}).get('enabled', True) %}checked{% endif %}>
+        EMVA noise model validation
+        {{ tip("Checks that noise parameters (read noise, gain,\nfull-well) are self-consistent via Monte Carlo\nsimulation and compares against datasheet values.") }}
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" name="validate_demosaic" value="true" {% if pipeline.get('validate_demosaic',{}).get('enabled', True) %}checked{% endif %}>
+        Demosaic linear metrics
+        {{ tip("Measures MAE and RMSE error introduced by\nbilinear demosaic compared to the clean\nlinear signal. Results shown in the results panel.") }}
+      </label>
+    </div>
+  </details>
+
+  <!-- Advanced -->
+  <details class="section">
+    <summary>Advanced</summary>
+    <div class="section-body">
+      <label class="checkbox-row" style="grid-column:1/-1">
+        <input type="checkbox" name="gpu_enabled" value="true" {% if r.get('gpu_enabled') %}checked{% endif %}>
+        GPU render
+        {{ tip("Uses PBRT's wavefront integrator for GPU\nrendering. Requires a CUDA + OptiX build\nof PBRT. Has no effect on CPU-only builds.") }}
+      </label>
+      <label><span>Calibration tier policy {{ tip("How strictly camera parameter quality is\nenforced.\nstrict: only measured datasheet values.\nsemi_strict: inferred values allowed.\nresearch: no restrictions.") }}</span>
+        <select name="calibration_policy">
+          <option value="semi_strict" {% if adv.get('calibration_tier_policy','semi_strict')=='semi_strict' %}selected{% endif %}>semi_strict</option>
+          <option value="strict" {% if adv.get('calibration_tier_policy')=='strict' %}selected{% endif %}>strict</option>
+          <option value="research" {% if adv.get('calibration_tier_policy')=='research' %}selected{% endif %}>research</option>
+        </select>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" name="strict_qe" value="true" {% if adv.get('strict_qe_validation') %}checked{% endif %}>
+        Strict QE validation
+        {{ tip("Reject QE curve CSV files that use a\nnormalised (0–1) wavelength axis instead\nof explicit nanometre values.") }}
+      </label>
+      <label><span>λ min (nm) {{ tip("Start of the spectral render range in nm.\n360 nm covers the near-UV edge of\nhuman-visible light.") }}</span>
+        <input type="number" name="spectral_lambda_min" value="{{ r.get('spectral_lambda_min', 360.0) }}" step="5" min="300" max="800">
+      </label>
+      <label><span>λ max (nm) {{ tip("End of the spectral render range in nm.\n830 nm covers the near-infrared edge\nbeyond human vision.") }}</span>
+        <input type="number" name="spectral_lambda_max" value="{{ r.get('spectral_lambda_max', 830.0) }}" step="5" min="400" max="1100">
+      </label>
+    </div>
+  </details>
+
+</form>
+
+<script>
+(function() { updateLensFields && updateLensFields(); })();
+</script>
